@@ -11,13 +11,13 @@ untar() {
   fi
 
   mkdir -p ${tar_dir}
-  tar -xf ${file} -C ${tar_dir}
+  tar -xf "$file" -C "$tar_dir" || { echo "Failed to extract $file"; exit 1; }
 
-  if [ ! -d ${tar_dir}/data ]; then
-    if [ -d ${tar_dir}/data_5_sdf ]; then
-      ln -s ${tar_dir}/data_5_sdf ${tar_dir}/data
-    else
-      ln -s ${tar_dir}/data_5 ${tar_dir}/data
+  if [ ! -e "${tar_dir}/data" ]; then
+    if [ -d "${tar_dir}/data_5_sdf" ]; then
+      ln -s "data_5_sdf" "${tar_dir}/data"
+    elif [ -d "${tar_dir}/data_5" ]; then
+      ln -s "data_5" "${tar_dir}/data"
     fi
   fi
 }
