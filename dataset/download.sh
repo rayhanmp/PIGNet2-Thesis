@@ -3,8 +3,9 @@
 download() {
   file=${1}
   url="https://zenodo.org/record/8091220/files/${file}?download=1"
-  if [ ! -f tarfiles/${file} ]; then
-    wget ${url} -O tarfiles/${file}
+  out_path="tarfiles/${file}"
+  if [ ! -f "$out_path" ]; then
+    aria2c -x 16 -s 16 -k 1M -o "${file}" -d tarfiles "${url}"
   fi
 }
 
