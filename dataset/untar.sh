@@ -13,15 +13,14 @@ untar() {
   echo "[INFO] Extracting ${file} to ${tar_dir}..."
   mkdir -p "${tar_dir}"
 
-  if command -v pixz >/dev/null 2>&1 && command -v pv >/dev/null 2>&1; then
-    size=$(stat -c %s "$file")
-    echo "[INFO] Using pv + pixz (size: $size bytes)"
-    pv -s "$size" "$file" | pixz -d | tar --no-same-owner -x -C "${tar_dir}" || {
+  if command -v pixz >/dev/null 2>&1; then
+    echo "[INFO] Using pixz"
+    pixz -d < "$file" | tar --no-same-owner -x -C "${tar_dir}" || {
       echo "[ERROR] Extraction failed for ${file} with pixz"
       exit 1
     }
   else
-    echo "[WARN] Falling back to plain tar (slow, no progress bar)"
+    echo "[WARN] Falling back to plain tar (no pixz)"
     tar --no-same-owner -xf "${file}" -C "${tar_dir}" || {
       echo "[ERROR] Fallback extraction failed for ${file}"
       exit 1
