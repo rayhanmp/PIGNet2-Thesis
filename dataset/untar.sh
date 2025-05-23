@@ -12,10 +12,19 @@ untar() {
 
   echo "[INFO] Extracting ${file} to ${tar_dir}..."
   mkdir -p "${tar_dir}"
-  tar --no-same-owner -xf "${file}" -C "${tar_dir}" || {
-    echo "[ERROR] Failed to extract ${file}"
-    exit 1
-  }
+
+  if command -v pixz >/dev/null 2>&1; then
+    pixz -d < "${file}" | tar --no-same-owner -x -C "${tar_dir}" || {
+      echo "[ERROR] pixz-based extraction failed for ${file}"
+      exit 1
+    }
+  else
+    echo "[WARN] pixz not found, falling back to slow tar"
+    tar --no-same-owner -xf "${file}" -C "${tar_dir}" || {
+      echo "[ERROR] tar fallback failed for ${file}"
+      exit 1
+    }
+  fi
 
   if [ ! -e "${tar_dir}/data" ]; then
     if [ -d "${tar_dir}/data_5_sdf" ]; then
