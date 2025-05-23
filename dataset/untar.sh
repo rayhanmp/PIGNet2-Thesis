@@ -14,7 +14,7 @@ untar() {
   mkdir -p "${tar_dir}"
 
   if command -v pixz >/dev/null 2>&1; then
-    pixz -d < "${file}" | tar --no-same-owner -x -C "${tar_dir}" || {
+    pv "${file}" | pixz -d | tar --no-same-owner -x -C "${tar_dir}" || {
       echo "[ERROR] pixz-based extraction failed for ${file}"
       exit 1
     }
