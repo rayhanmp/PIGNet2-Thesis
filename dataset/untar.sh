@@ -1,17 +1,21 @@
 #!/bin/bash
 
 untar() {
-  file=${1}
-  dir=$(basename ${file} .tar.xz | rev | cut -d_ -f1 | rev)
+  file="${1}"
+  dir="$(basename "${file}" .tar.xz | rev | cut -d_ -f1 | rev)"
 
   if [[ "$file" == *"PDBbind-v2020"* ]]; then
-    tar_dir=${PWD}/PDBbind-v2020/${dir}
+    tar_dir="${PWD}/PDBbind-v2020/${dir}"
   else
-    tar_dir=${PWD}/Benchmark/${dir}
+    tar_dir="${PWD}/Benchmark/${dir}"
   fi
 
-  mkdir -p ${tar_dir}
-  tar -xf "$file" -C "$tar_dir" || { echo "Failed to extract $file"; exit 1; }
+  echo "[INFO] Extracting ${file} to ${tar_dir}..."
+  mkdir -p "${tar_dir}"
+  tar --no-same-owner -xf "${file}" -C "${tar_dir}" || {
+    echo "[ERROR] Failed to extract ${file}"
+    exit 1
+  }
 
   if [ ! -e "${tar_dir}/data" ]; then
     if [ -d "${tar_dir}/data_5_sdf" ]; then
