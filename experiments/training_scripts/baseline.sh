@@ -18,11 +18,11 @@ python -u ${EXE_DIR}/exe/train.py \
   model.short_range_A=2.1 \
   run.dropout_rate=0.1 \
   run.lr=4e-4 \
-  run.batch_size=64 \
+  run.batch_size=512 \
   run.save_every=1 \
   run.num_epochs=5000 \
-  run.num_workers=4 \
-  run.pin_memory=false \
+  run.num_workers=12 \
+  run.pin_memory=true \
   run.seed=${SEED}
 
 date
