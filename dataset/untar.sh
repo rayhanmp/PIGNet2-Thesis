@@ -5,9 +5,9 @@ untar() {
   dir="$(basename "${file}" .tar.xz | rev | cut -d_ -f1 | rev)"
 
   if [[ "$file" == *"PDBbind-v2020"* ]]; then
-    tar_dir="${PWD}/PDBbind-v2020/${dir}"
+    tar_dir="${PWD}/dataset/PDBbind-v2020/${dir}"
   else
-    tar_dir="${PWD}/Benchmark/${dir}"
+    tar_dir="${PWD}/dataset/Benchmark/${dir}"
   fi
 
   echo "[INFO] Extracting ${file} to ${tar_dir}..."
