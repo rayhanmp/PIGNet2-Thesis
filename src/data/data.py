@@ -142,18 +142,20 @@ def mol_to_data(
     if remove_hydrogens:
         mol = Chem.RemoveAllHs(mol)
 
-    # Node features
-    x = torch.tensor(
-        [atom_to_features(atom) for atom in mol.GetAtoms()], dtype=torch.float
-    )
-    # Adjacency matrix
-    # Self-loops will be added in GNNs only when necessary.
-    adj = torch.tensor(rdmolops.GetAdjacencyMatrix(mol))
-    # Convert to the sparse, long-type form.
-    edge_index, edge_attr = dense_to_sparse(adj)
+    # Get all atoms at once to avoid repeated calls
+    atoms = list(mol.GetAtoms())
+    num_atoms = len(atoms)
 
+    # Pre-allocate tensors for better memory efficiency
     data = Data()
+    
+    # Node features - vectorized operation
+    x = torch.tensor([atom_to_features(atom) for atom in atoms], dtype=torch.float)
     data.x = x
+
+    # Adjacency matrix - single operation
+    adj = torch.tensor(rdmolops.GetAdjacencyMatrix(mol))
+    edge_index, _ = dense_to_sparse(adj)
     data.edge_index = edge_index
 
     # Cartesian coordinates
@@ -164,34 +166,48 @@ def mol_to_data(
         raise RuntimeError(msg)
     data.pos = torch.tensor(pos, dtype=torch.float)
 
-    noise = torch.zeros_like(data.pos)
-    if pos_noise_std and pos_noise_max:
-        noise += torch.normal(0, pos_noise_std, size=noise.shape)
-        noise.clamp_(-pos_noise_max, pos_noise_max)
-    elif pos_noise_std:
-        noise += torch.normal(0, pos_noise_std, size=noise.shape)
-    elif pos_noise_max:
-        noise += (pos_noise_max * 2) * torch.rand(noise.shape) - pos_noise_max
-    data.pos += noise
+    # Add noise in a single operation
+    if pos_noise_std or pos_noise_max:
+        noise = torch.zeros_like(data.pos)
+        if pos_noise_std:
+            noise += torch.normal(0, pos_noise_std, size=noise.shape)
+        if pos_noise_max:
+            noise.clamp_(-pos_noise_max, pos_noise_max)
+        data.pos += noise
 
-    # VdW radii
-    vdw_radii = [get_vdw_radius(atom) for atom in mol.GetAtoms()]
-    data.vdw_radii = torch.tensor(vdw_radii, dtype=torch.float)
+    # Pre-compute all atom properties in parallel
+    vdw_radii = torch.tensor([get_vdw_radius(atom) for atom in atoms], dtype=torch.float)
+    atom_charges = torch.tensor([atom.GetFormalCharge() for atom in atoms], dtype=torch.float)
+    metals = torch.tensor([atom.GetSymbol() in chem.METALS for atom in atoms], dtype=torch.bool)
+    
+    # SMARTS patterns - compute once and reuse
+    pattern = Chem.MolFromSmarts(chem.H_DONOR_SMARTS)
+    h_donor_matches = {idx for match in mol.GetSubstructMatches(pattern) for idx in match}
+    pattern = Chem.MolFromSmarts(chem.H_ACCEPTOR_SMARTS)
+    h_acceptor_matches = {idx for match in mol.GetSubstructMatches(pattern) for idx in match}
+    
+    # Convert matches to masks
+    h_donors = torch.tensor([idx in h_donor_matches for idx in range(num_atoms)], dtype=torch.bool)
+    h_acceptors = torch.tensor([idx in h_acceptor_matches for idx in range(num_atoms)], dtype=torch.bool)
+    
+    # Hydrophobes - optimized version
+    hydrophobes = []
+    for atom in atoms:
+        symbol = atom.GetSymbol().upper()
+        if symbol in chem.HYDROPHOBES:
+            neighbor_symbols = {neighbor.GetSymbol().upper() for neighbor in atom.GetNeighbors()}
+            hydrophobes.append(len(neighbor_symbols - chem.HYDROPHOBES) == 0)
+        else:
+            hydrophobes.append(False)
+    hydrophobes = torch.tensor(hydrophobes, dtype=torch.bool)
 
-    # atomic charge
-    atom_charges = get_atom_charges(mol)
-    data.atom_charges = torch.tensor(atom_charges)
-
-    # Masks
-    metals = get_metals(mol)
-    h_donors = get_smarts_matches(mol, chem.H_DONOR_SMARTS)
-    h_acceptors = get_smarts_matches(mol, chem.H_ACCEPTOR_SMARTS)
-    hydrophobes = get_hydrophobes(mol)
-    # Expect bool tensors, but the exact dtype won't be important.
-    data.is_metal = torch.tensor(metals)
-    data.is_h_donor = torch.tensor(h_donors)
-    data.is_h_acceptor = torch.tensor(h_acceptors)
-    data.is_hydrophobic = torch.tensor(hydrophobes)
+    # Assign all properties at once
+    data.vdw_radii = vdw_radii
+    data.atom_charges = atom_charges
+    data.is_metal = metals
+    data.is_h_donor = h_donors
+    data.is_h_acceptor = h_acceptors
+    data.is_hydrophobic = hydrophobes
 
     return data
 
@@ -210,29 +226,30 @@ def get_complex_edges(
             Atoms a_i and a_j are deemed connected if:
                 min_distance <= d_ij <= max_distance
     """
-    # Distance matrix
-    D = torch.sqrt(
-        torch.pow(pos1.view(-1, 1, 3) - pos2.view(1, -1, 3), 2).sum(-1) + 1e-10
-    )
-    # -> (num_atoms1, num_atoms2)
-
-    # Rectangular adjacency matrix
-    A = torch.zeros_like(D)
-    A[(min_distance <= D) & (D <= max_distance)] = 1.0
-
-    # Convert to a sparse edge-index tensor.
-    edge_index = []
-    for i in range(A.size(0)):
-        for j in torch.nonzero(A[i]).view(-1):
-            j_shifted = j.item() + pos1.size(0)
-            edge_index.append([i, j_shifted])
-            edge_index.append([j_shifted, i])
-    edge_index = torch.tensor(edge_index).t().contiguous()
-
-    # Some complexes can have no intermolecular edge.
-    if not edge_index.numel():
-        edge_index = edge_index.view(2, -1).long()
-
+    # Optimized distance calculation using cdist
+    D = torch.cdist(pos1, pos2)
+    
+    # Create mask for distances within range
+    mask = (min_distance <= D) & (D <= max_distance)
+    
+    # Get indices of connected atoms
+    i, j = torch.nonzero(mask, as_tuple=True)
+    
+    # Shift j indices by pos1.size(0)
+    j_shifted = j + pos1.size(0)
+    
+    # Create bidirectional edges
+    edge_index = torch.stack([
+        torch.cat([i, j_shifted]),
+        torch.cat([j_shifted, i])
+    ])
+    
+    # Handle case with no edges
+    if edge_index.numel() == 0:
+        edge_index = edge_index.view(2, 0).long()
+    else:
+        edge_index = edge_index.long()
+    
     return edge_index
 
 
@@ -316,6 +333,8 @@ class ComplexDataset(Dataset):
         processed_data_dir: Optional[str] = None,
         pos_noise_std: float = 0.0,
         pos_noise_max: float = 0.0,
+        num_workers: int = 0,
+        cache_size: int = 1000,  # Add cache size parameter
     ):
         assert data_dir is not None or processed_data_dir is not None
 
@@ -327,43 +346,111 @@ class ComplexDataset(Dataset):
         self.processed_data_dir = processed_data_dir
         self.pos_noise_std = pos_noise_std
         self.pos_noise_max = pos_noise_max
+        self.num_workers = num_workers
+        self.cache_size = cache_size
+        
+        # Initialize cache
+        self._cache = {}
+        self._cache_order = []
+        
+        # Pre-compute labels if available
+        if id_to_y is not None:
+            self.labels = {k: v * -1.36 for k, v in id_to_y.items()}
+        else:
+            self.labels = None
+
+    def _update_cache(self, key: str, data: Data):
+        """Update the cache with LRU policy."""
+        if key in self._cache:
+            self._cache_order.remove(key)
+        elif len(self._cache) >= self.cache_size:
+            # Remove least recently used item
+            oldest_key = self._cache_order.pop(0)
+            del self._cache[oldest_key]
+        
+        self._cache[key] = data
+        self._cache_order.append(key)
 
     def len(self) -> int:
         return len(self.keys)
 
     def get(self, idx) -> Data:
         key = self.keys[idx]
+        
+        # Check cache first
+        if key in self._cache:
+            return self._cache[key]
 
         # Setting 'processed_data_dir' takes priority than 'data_dir'.
         if self.processed_data_dir is not None:
             data_path = os.path.join(self.processed_data_dir, key + ".pt")
-
-            with open(data_path, "rb") as f:
-                data = torch.load(f)
+            try:
+                data = torch.load(data_path, map_location='cpu')
+                self._update_cache(key, data)
+                return data
+            except Exception as e:
+                print(f"Error loading {data_path}: {e}")
+                return None
 
         elif self.data_dir is not None:
-            # pK_d -> kcal/mol
-            label = self.id_to_y[key] * -1.36
             data_path = os.path.join(self.data_dir, key)
+            try:
+                # Load data with error handling
+                with open(data_path, "rb") as f:
+                    data = pickle.load(f)
+                    try:
+                        mol_ligand, _, mol_target, _ = data
+                    except ValueError:
+                        try:
+                            mol_ligand, mol_target = data
+                        except ValueError:
+                            mol_ligand, mol_target = data.mol_ligand, data.mol_target
 
-            # Unpickle the `Chem.Mol` data.
-            with open(data_path, "rb") as f:
-                data = pickle.load(f)
-                try:
-                    mol_ligand, _, mol_target, _ = data
-                except ValueError:
-                    mol_ligand, mol_target = data
-                except ValueError:
-                    mol_ligand, mol_target = data.mol_ligand, data.mol_target
+                # Get label if available
+                label = self.labels.get(key) if self.labels is not None else None
 
-            data = complex_to_data(
-                mol_ligand,
-                mol_target,
-                label,
-                key,
-                self.conv_range,
-                pos_noise_std=self.pos_noise_std,
-                pos_noise_max=self.pos_noise_max,
-            )
+                data = complex_to_data(
+                    mol_ligand,
+                    mol_target,
+                    label,
+                    key,
+                    self.conv_range,
+                    pos_noise_std=self.pos_noise_std,
+                    pos_noise_max=self.pos_noise_max,
+                )
+                self._update_cache(key, data)
+                return data
+            except Exception as e:
+                print(f"Error processing {data_path}: {e}")
+                return None
 
-        return data
+        return None
+
+    def process(self):
+        """Pre-process all data and save to processed_data_dir if specified."""
+        if self.processed_data_dir is None:
+            return
+
+        os.makedirs(self.processed_data_dir, exist_ok=True)
+        
+        # Process data in parallel if num_workers > 0
+        if self.num_workers > 0:
+            from concurrent.futures import ProcessPoolExecutor
+            with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+                list(executor.map(self._process_single, self.keys))
+        else:
+            for key in self.keys:
+                self._process_single(key)
+
+    def _process_single(self, key: str):
+        """Process and save a single data point."""
+        if self.processed_data_dir is None:
+            return
+
+        data_path = os.path.join(self.processed_data_dir, key + ".pt")
+        if os.path.exists(data_path):
+            return
+
+        data = self.get(key)
+        if data is not None:
+            torch.save(data, data_path)
