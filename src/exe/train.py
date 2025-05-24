@@ -188,32 +188,11 @@ def main(config: DictConfig):
             history["train_r2"].append(train_r2)
             history["test_r2"].append(test_r2)
 
-            if config.run.save_every:
-                if epoch == 1 or epoch % config.run.save_every == 0:
-                    save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
-                    utils.save_state(save_path, epoch, model, optimizer)
-                    mlflow.pytorch.log_model(model, artifact_path="model")
-        
-        # Plot loss curves
-        fig, ax = plt.subplots()
-        ax.plot(history["epoch"], history["train_loss_total"], label="Train Loss")
-        ax.plot(history["epoch"], history["test_loss_total"], label="Test Loss")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Loss")
-        ax.set_title("Loss Curve")
-        ax.legend()
-        log_plot_to_mlflow(fig, "loss_curve.png")
+            if epoch == 1 or epoch % 50 == 0:
+                save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
+                utils.save_state(save_path, epoch, model, optimizer)
 
-        # Plot R2 curve
-        fig, ax = plt.subplots()
-        ax.plot(history["epoch"], history["train_r2"], label="Train R²")
-        ax.plot(history["epoch"], history["test_r2"], label="Test R²")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("R²")
-        ax.set_title("R² Score")
-        ax.legend()
-        log_plot_to_mlflow(fig, "r2_score_curve.png")
-
+        mlflow.pytorch.log_model(model, artifact_path="model")
 
 if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = False
