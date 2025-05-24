@@ -22,9 +22,9 @@ def one_hot_encode(
     Args:
         handle_unknown: 'error' | 'ignore' | 'last'
             If `x` not in `kinds`:
-              'error' -> raise ValueError
-              'ignore' -> return zero vector
-              'last' -> use the last kind.
+                'error' -> raise ValueError
+                'ignore' -> return zero vector
+                'last' -> use the last kind.
     """
     onehot = [False] * len(kinds)
     try:
@@ -166,14 +166,17 @@ def mol_to_data(
         raise RuntimeError(msg)
     data.pos = torch.tensor(pos, dtype=torch.float)
 
-    # Add noise in a single operation
-    if pos_noise_std or pos_noise_max:
-        noise = torch.zeros_like(data.pos)
-        if pos_noise_std:
-            noise += torch.normal(0, pos_noise_std, size=noise.shape)
-        if pos_noise_max:
-            noise.clamp_(-pos_noise_max, pos_noise_max)
-        data.pos += noise
+    # Add noise - MODIFIED SECTION TO MATCH CODE 2 LOGIC
+    noise = torch.zeros_like(data.pos)
+    if pos_noise_std and pos_noise_max:
+        noise += torch.normal(0, pos_noise_std, size=noise.shape)
+        noise.clamp_(-pos_noise_max, pos_noise_max)
+    elif pos_noise_std:
+        noise += torch.normal(0, pos_noise_std, size=noise.shape)
+    elif pos_noise_max:
+        noise += (pos_noise_max * 2) * torch.rand(noise.shape) - pos_noise_max
+    data.pos += noise
+    # END OF MODIFIED SECTION
 
     # Pre-compute all atom properties in parallel
     vdw_radii = torch.tensor([get_vdw_radius(atom) for atom in atoms], dtype=torch.float)
@@ -397,14 +400,15 @@ class ComplexDataset(Dataset):
             try:
                 # Load data with error handling
                 with open(data_path, "rb") as f:
-                    data = pickle.load(f)
+                    data_mol_info = pickle.load(f) # Renamed to avoid conflict with 'data' PyG object
                     try:
-                        mol_ligand, _, mol_target, _ = data
+                        mol_ligand, _, mol_target, _ = data_mol_info
                     except ValueError:
                         try:
-                            mol_ligand, mol_target = data
-                        except ValueError:
-                            mol_ligand, mol_target = data.mol_ligand, data.mol_target
+                            mol_ligand, mol_target = data_mol_info
+                        except ValueError: # Added to catch if data_mol_info is already a PyG-like object with .mol_ligand
+                            mol_ligand, mol_target = data_mol_info.mol_ligand, data_mol_info.mol_target
+
 
                 # Get label if available
                 label = self.labels.get(key) if self.labels is not None else None
@@ -415,7 +419,8 @@ class ComplexDataset(Dataset):
                     label,
                     key,
                     self.conv_range,
-                    pos_noise_std=self.pos_noise_std,
+                    # Pass the dataset's noise parameters to mol_to_data
+                    pos_noise_std=self.pos_noise_std, 
                     pos_noise_max=self.pos_noise_max,
                 )
                 self._update_cache(key, data)
@@ -436,11 +441,30 @@ class ComplexDataset(Dataset):
         # Process data in parallel if num_workers > 0
         if self.num_workers > 0:
             from concurrent.futures import ProcessPoolExecutor
+            
+            # Helper function to pass instance methods for ProcessPoolExecutor
+            def process_item(item_key):
+                # When loading from data_dir, self.get will call complex_to_data,
+                # which calls mol_to_data with self.pos_noise_std and self.pos_noise_max.
+                # The data is then saved.
+                processed_data = self.get(self.keys.index(item_key)) 
+                if processed_data is not None:
+                    # Saving logic is now inside _process_single, called below if not parallel
+                    # For parallel, we need to ensure _process_single is called or its logic replicated
+                    save_path = os.path.join(self.processed_data_dir, item_key + ".pt")
+                    if not os.path.exists(save_path): # Avoid re-saving if get() already loaded it from processed
+                         torch.save(processed_data, save_path)
+
+
             with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+                # We map over keys, as _process_single takes a key
+                # The list(executor.map(...)) ensures all tasks complete
                 list(executor.map(self._process_single, self.keys))
         else:
-            for key in self.keys:
-                self._process_single(key)
+            for key_idx in range(len(self.keys)): # Iterate by index to use self.get(idx)
+                # self._process_single will call self.get(idx_of_key)
+                self._process_single(self.keys[key_idx])
+
 
     def _process_single(self, key: str):
         """Process and save a single data point."""
@@ -449,8 +473,16 @@ class ComplexDataset(Dataset):
 
         data_path = os.path.join(self.processed_data_dir, key + ".pt")
         if os.path.exists(data_path):
-            return
+            return # Already processed
 
-        data = self.get(key)
+        # Get data using the key. This will use the dataset's pos_noise_std/max.
+        # self.get needs an index, so find the index of the key.
+        try:
+            idx = self.keys.index(key)
+            data = self.get(idx) # This call will use self.pos_noise_std and self.pos_noise_max from the dataset instance
+        except ValueError:
+            print(f"Key {key} not found in dataset keys during processing.")
+            return
+        
         if data is not None:
             torch.save(data, data_path)
