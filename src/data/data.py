@@ -341,7 +341,6 @@ class ComplexDataset(Dataset):
     ):
         assert data_dir is not None or processed_data_dir is not None
 
-        super().__init__()
         self.keys = keys
         self.data_dir = data_dir
         self.id_to_y = id_to_y
@@ -351,7 +350,8 @@ class ComplexDataset(Dataset):
         self.pos_noise_max = pos_noise_max
         self.num_workers = num_workers
         self.cache_size = cache_size
-        
+        super().__init__()
+
         # Initialize cache
         self._cache = {}
         self._cache_order = []
@@ -373,6 +373,16 @@ class ComplexDataset(Dataset):
         
         self._cache[key] = data
         self._cache_order.append(key)
+
+    @property
+    def raw_file_names(self):
+        return []
+
+    @property
+    def processed_file_names(self):
+        return []
+
+    def download(self): pass  # only needed for PyG conformity
 
     def len(self) -> int:
         return len(self.keys)
