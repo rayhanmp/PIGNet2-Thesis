@@ -16,7 +16,8 @@ from tqdm import tqdm
 import path
 import utils
 from data import ComplexDataModule
-
+import mlflow
+import mlflow.pytorch
 
 def run(
     model: torch.nn.Module,

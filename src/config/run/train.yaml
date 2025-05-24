@@ -15,3 +15,8 @@ checkpoint_dir: ckpt
 tensorboard_dir: runs
 log_file: ${hydra:job.name}.log
 restart_file:
+
+
+mlflow_uri: "https://mlflow.rayhan.id"
+experiment_name: ThesisPIGNet2
+run_name: ${now:%Y-%m-%d}_${now:%H-%M-%S}
