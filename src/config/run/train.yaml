@@ -10,6 +10,7 @@ lr_decay: 1.0
 weight_decay: 0.0
 dropout_rate: 0.1
 loss_dvdw_ratio: 10.0
+mixed_precision: true
 ## Following are relative to `hydra.run.dir`.
 checkpoint_dir: ckpt
 tensorboard_dir: runs

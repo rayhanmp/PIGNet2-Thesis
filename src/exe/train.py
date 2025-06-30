@@ -10,6 +10,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
 # isort: off
@@ -35,6 +36,8 @@ def run(
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     train: bool,
+    scaler: GradScaler = None,
+    use_amp: bool = False,
 ):
     if train:
         model.train()
@@ -50,12 +53,24 @@ def run(
 
         if train:
             model.zero_grad()
-            loss_total = model.training_step(batch)
-            loss_total.backward()
-            optimizer.step()
+            if use_amp and scaler is not None:
+                with autocast():
+                    loss_total = model.training_step(batch)
+                scaler.scale(loss_total).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # Standard training
+                loss_total = model.training_step(batch)
+                loss_total.backward()
+                optimizer.step()
         else:
             with torch.no_grad():
-                model.validation_step(batch)
+                if use_amp:
+                    with autocast():
+                        model.validation_step(batch)
+                else:
+                    model.validation_step(batch)
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config_train")
@@ -91,6 +106,16 @@ def main(config: DictConfig):
     optimizer = model.configure_optimizers()
     if checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    use_amp = config.run.get("mixed_precision", False) and torch.cuda.is_available()
+    scaler = GradScaler() if use_amp else None
+    if checkpoint and use_amp and "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        logger.info("Mixed precision training enabled (resumed from checkpoint)")
+    elif use_amp:
+        logger.info("Mixed precision training enabled")
+    else:
+        logger.info("Standard precision training")
 
     for task in data.tasks:
         if dir_path := config.data[task].processed_data_dir:
@@ -128,7 +153,7 @@ def main(config: DictConfig):
             data.sample_keys()
 
             model.reset_log()
-            run(model, data, device, optimizer, True)
+            run(model, data, device, optimizer, True, scaler, use_amp)
             train_losses = utils.get_losses(model)
 
             task_name = "scoring"
@@ -138,7 +163,7 @@ def main(config: DictConfig):
             utils.write_predictions(model, config, True)
 
             model.reset_log()
-            run(model, data, device, optimizer, False)
+            run(model, data, device, optimizer, False, scaler, use_amp)
             test_losses = utils.get_losses(model)
             test_r, test_r2, test_tau = utils.get_stats(model, task_name)
             utils.write_predictions(model, config, False)
@@ -190,7 +215,7 @@ def main(config: DictConfig):
 
             if epoch == 1 or epoch % 50 == 0:
                 save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
-                utils.save_state(save_path, epoch, model, optimizer)
+                utils.save_state(save_path, epoch, model, optimizer, scaler)
 
         mlflow.pytorch.log_model(model, artifact_path="model")
 

@@ -121,17 +121,21 @@ def save_state(
     epoch: int,
     model: Module,
     optimizer: Optimizer,
+    scaler: Optional['torch.cuda.amp.GradScaler'] = None,
 ) -> None:
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "config": model.config,
-            "in_features": model.in_features,
-        },
-        save_path,
-    )
+    checkpoint_dict = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": model.config,
+        "in_features": model.in_features,
+    }
+    
+    # Save GradScaler state if using mixed precision
+    if scaler is not None:
+        checkpoint_dict["scaler_state_dict"] = scaler.state_dict()
+    
+    torch.save(checkpoint_dict, save_path)
 
 
 def get_losses(model: Module) -> Dict[str, float]:
