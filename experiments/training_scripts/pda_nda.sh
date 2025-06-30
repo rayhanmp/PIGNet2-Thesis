@@ -12,8 +12,8 @@ date
 python -u ${EXE_DIR}/exe/train.py \
   experiment_name=${EXPERIMENT_NAME} \
   data=[messi/pda,messi/docking,messi/cross,messi/random] \
-  data.pda.root_data_dir=${DATA_DIR}/pda \
-  data.pda.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/pda \
+  data.tpda.root_data_dir=${DATA_DIR}/pda \
+  data.tpda.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/pda \
   data.docking.root_data_dir=${DATA_DIR}/docking \
   data.docking.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/docking \
   data.cross.root_data_dir=${DATA_DIR}/cross \
