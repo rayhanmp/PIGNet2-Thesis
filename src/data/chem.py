@@ -1,6 +1,32 @@
 from rdkit import Chem
 from rdkit.Chem.rdchem import HybridizationType
 
+AMINO_ACID_TYPES = [
+    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
+    'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL',
+]
+
+RESIDUE_NET_CHARGE = {
+    'ALA': 0, 'ARG': 1, 'ASN': 0, 'ASP': -1, 'CYS': 0,
+    'GLN': 0, 'GLU': -1, 'GLY': 0, 'HIS': 0, 'ILE': 0,
+    'LEU': 0, 'LYS': 1, 'MET': 0, 'PHE': 0, 'PRO': 0,
+    'SER': 0, 'THR': 0, 'TRP': 0, 'TYR': 0, 'VAL': 0,
+}
+
+RESIDUE_HYDROPHOBICITY = {
+    'ALA': 1.8, 'ARG': -4.5, 'ASN': -3.5, 'ASP': -3.5, 'CYS': 2.5,
+    'GLN': -3.5, 'GLU': -3.5, 'GLY': -0.4, 'HIS': -3.2, 'ILE': 4.5,
+    'LEU': 3.8, 'LYS': -3.9, 'MET': 1.9, 'PHE': 2.8, 'PRO': -1.6,
+    'SER': -0.8, 'THR': -0.7, 'TRP': -0.9, 'TYR': -1.3, 'VAL': 4.2,
+}
+
+RESIDUE_POLARITY = {
+    'ALA': 0, 'ARG': 1, 'ASN': 1, 'ASP': 1, 'CYS': 0,
+    'GLN': 1, 'GLU': 1, 'GLY': 0, 'HIS': 1, 'ILE': 0,
+    'LEU': 0, 'LYS': 1, 'MET': 0, 'PHE': 0, 'PRO': 0,
+    'SER': 1, 'THR': 1, 'TRP': 1, 'TYR': 1, 'VAL': 0,
+}
+
 _periodic_table = """\
 H,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,HE
 LI,BE,1,1,1,1,1,1,1,1,1,1,B,C,N,O,F,NE

@@ -338,6 +338,7 @@ class ComplexDataset(Dataset):
         pos_noise_max: float = 0.0,
         num_workers: int = 0,
         cache_size: int = 1000,  # Add cache size parameter
+        root: Optional[str] = None,  # Add root parameter for PyG compatibility
     ):
         assert data_dir is not None or processed_data_dir is not None
 
@@ -350,8 +351,7 @@ class ComplexDataset(Dataset):
         self.pos_noise_max = pos_noise_max
         self.num_workers = num_workers
         self.cache_size = cache_size
-        super().__init__()
-
+        
         # Initialize cache
         self._cache = {}
         self._cache_order = []
@@ -361,6 +361,15 @@ class ComplexDataset(Dataset):
             self.labels = {k: v * -1.36 for k, v in id_to_y.items()}
         else:
             self.labels = None
+        
+        # Set root for PyG compatibility - use a default temp directory if not provided
+        if root is None:
+            import tempfile
+            self._root = tempfile.mkdtemp(prefix="pignet_dataset_")
+        else:
+            self._root = root
+            
+        super().__init__(root=self._root)
 
     def _update_cache(self, key: str, data: Data):
         """Update the cache with LRU policy."""

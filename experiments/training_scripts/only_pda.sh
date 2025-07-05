@@ -12,8 +12,8 @@ date
 python -u ${EXE_DIR}/exe/train.py \
   experiment_name=${EXPERIMENT_NAME} \
   data=[messi/pda] \
-  data.pda.root_data_dir=${DATA_DIR}/pda \
-  data.pda.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/pda \
+  data.tpda.root_data_dir=${DATA_DIR}/pda \
+  data.tpda.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/pda \
   model=pignet_morse \
   model.short_range_A=2.1 \
   run.dropout_rate=0.1 \
