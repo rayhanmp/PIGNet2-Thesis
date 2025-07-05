@@ -11,6 +11,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from torch.profiler import profile, record_function, ProfilerActivity
 
 # isort: off
 import path
@@ -35,6 +36,7 @@ def run(
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     train: bool,
+    use_profiler: bool = False,
 ):
     if train:
         model.train()
@@ -44,18 +46,26 @@ def run(
         loaders = data.val_dataloader()
 
     tasks = list(loaders.keys())
-    for batch in tqdm(zip(*(loaders[task] for task in tasks))):
-        batch = dict(zip(tasks, batch))
-        batch = {task: batch[task].to(device) for task in batch}
+    
+    with record_function("data_loading_and_processing"):
+        for batch in tqdm(zip(*(loaders[task] for task in tasks))):
+            with record_function("batch_preparation"):
+                batch = dict(zip(tasks, batch))
+                batch = {task: batch[task].to(device) for task in batch}
 
-        if train:
-            model.zero_grad()
-            loss_total = model.training_step(batch)
-            loss_total.backward()
-            optimizer.step()
-        else:
-            with torch.no_grad():
-                model.validation_step(batch)
+            if train:
+                with record_function("training_step"):
+                    model.zero_grad()
+                    with record_function("forward_pass"):
+                        loss_total = model.training_step(batch)
+                    with record_function("backward_pass"):
+                        loss_total.backward()
+                    with record_function("optimizer_step"):
+                        optimizer.step()
+            else:
+                with record_function("validation_step"):
+                    with torch.no_grad():
+                        model.validation_step(batch)
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config_train")
@@ -129,12 +139,44 @@ def main(config: DictConfig):
         except Exception as e:
             print(f"Error logging parameters to MLflow: {e}")
 
+        # PyTorch Profiler setup
+        profiler_enabled = getattr(config.run, 'enable_profiler', False)
+        profiler_epochs = getattr(config.run, 'profiler_epochs', [1, 2])  # Profile first 2 epochs by default
+        profiler_output_dir = getattr(config.run, 'profiler_output_dir', './profiler_output')
+        
+        os.makedirs(profiler_output_dir, exist_ok=True)
+        
+        # Configure profiler
+        profiler_activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            profiler_activities.append(ProfilerActivity.CUDA)
+            
+        profiler_context = None
+        if profiler_enabled:
+            logger.info(f"Profiler enabled for epochs: {profiler_epochs}")
+            logger.info(f"Profiler output directory: {profiler_output_dir}")
+
         for epoch in range(last_epoch + 1, config.run.num_epochs + 1):
             start_time = time.time()
             data.sample_keys()
 
+            # Start profiler for specific epochs
+            should_profile = profiler_enabled and epoch in profiler_epochs
+            if should_profile:
+                profiler_context = profile(
+                    activities=profiler_activities,
+                    record_shapes=True,
+                    profile_memory=True,
+                    with_stack=True,
+                    on_trace_ready=lambda trace: trace.export_chrome_trace(
+                        os.path.join(profiler_output_dir, f"epoch_{epoch}_trace.json")
+                    )
+                )
+                profiler_context.__enter__()
+                logger.info(f"Starting profiler for epoch {epoch}")
+
             model.reset_log()
-            run(model, data, device, optimizer, True)
+            run(model, data, device, optimizer, True, should_profile)
             train_losses = utils.get_losses(model)
 
             task_name = "scoring"
@@ -144,10 +186,33 @@ def main(config: DictConfig):
             utils.write_predictions(model, config, True)
 
             model.reset_log()
-            run(model, data, device, optimizer, False)
+            run(model, data, device, optimizer, False, should_profile)
             test_losses = utils.get_losses(model)
             test_r, test_r2, test_tau = utils.get_stats(model, task_name)
             utils.write_predictions(model, config, False)
+
+            # Stop profiler and save results
+            if should_profile and profiler_context:
+                profiler_context.__exit__(None, None, None)
+                
+                # Export additional profiler outputs
+                try:
+                    # Save detailed profiler table
+                    profile_table = profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=20)
+                    with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_table.txt"), "w") as f:
+                        f.write(profile_table)
+                    
+                    # Save profiler statistics by input shapes
+                    profile_shapes = profiler_context.key_averages(group_by_input_shape=True).table(sort_by="cuda_time_total", row_limit=20)
+                    with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_shapes.txt"), "w") as f:
+                        f.write(profile_shapes)
+                        
+                    logger.info(f"Profiler data saved to {profiler_output_dir}/epoch_{epoch}_*")
+                    print(f"\nTop operations by CUDA time for epoch {epoch}:")
+                    print(profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+                    
+                except Exception as e:
+                    logger.error(f"Error saving profiler data: {e}")
 
             end_time = time.time()
 

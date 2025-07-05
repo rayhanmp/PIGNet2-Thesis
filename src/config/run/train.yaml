@@ -16,6 +16,10 @@ tensorboard_dir: runs
 log_file: ${hydra:job.name}.log
 restart_file:
 
+# PyTorch Profiler settings for identifying bottlenecks
+enable_profiler: false  # Set to true to enable profiling
+profiler_epochs: [1, 2]  # Which epochs to profile (list of epoch numbers)
+profiler_output_dir: profiler_output  # Directory to save profiler results
 
 mlflow_uri: "https://mlflow.rayhan.id"
 experiment_name: ThesisPIGNet2
