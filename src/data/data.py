@@ -409,6 +409,9 @@ class ComplexDataset(Dataset):
             data_path = os.path.join(self.processed_data_dir, key + ".pt")
             try:
                 data = torch.load(data_path, map_location='cpu')
+                if not hasattr(data, "y") or data.y is None:
+                    affinity = self.affinity_dict[key]          # already parsed at __init__
+                    data.y = torch.tensor([affinity], dtype=torch.float32)
                 self._update_cache(key, data)
                 return data
             except Exception as e:
