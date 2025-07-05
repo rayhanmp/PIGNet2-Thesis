@@ -16,7 +16,7 @@ os.makedirs("processed_features/test", exist_ok=True)
 # Preprocess training data
 train_dataset = ComplexDataset(
     keys=train_keys,
-    data_dir="dataset/PDBbind-v2020/scoring",
+    data_dir="dataset/PDBbind-v2020/scoring/data",
     processed_data_dir="processed_features/train/",
     conv_range=(0.0, 8.0),  # From model config
 )
@@ -27,7 +27,7 @@ train_dataset.process()
 # Preprocess test data too
 test_dataset = ComplexDataset(
     keys=test_keys,
-    data_dir="dataset/PDBbind-v2020/scoring", 
+    data_dir="dataset/PDBbind-v2020/scoring/data", 
     processed_data_dir="processed_features/test/",
     conv_range=(0.0, 8.0),
 )
