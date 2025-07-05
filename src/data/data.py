@@ -337,7 +337,7 @@ class ComplexDataset(Dataset):
         pos_noise_std: float = 0.0,
         pos_noise_max: float = 0.0,
         num_workers: int = 0,
-        cache_size: int = 1000,  # Add cache size parameter
+        cache_size: int = 0,  # Add cache size parameter
         root: Optional[str] = None,  # Add root parameter for PyG compatibility
     ):
         assert data_dir is not None or processed_data_dir is not None
@@ -353,8 +353,8 @@ class ComplexDataset(Dataset):
         self.cache_size = cache_size
         
         # Initialize cache
-        self._cache = {}
-        self._cache_order = []
+        # self._cache = {}
+        # self._cache_order = []
         
         # Pre-compute labels if available
         if id_to_y is not None:
@@ -373,15 +373,16 @@ class ComplexDataset(Dataset):
 
     def _update_cache(self, key: str, data: Data):
         """Update the cache with LRU policy."""
-        if key in self._cache:
-            self._cache_order.remove(key)
-        elif len(self._cache) >= self.cache_size:
-            # Remove least recently used item
-            oldest_key = self._cache_order.pop(0)
-            del self._cache[oldest_key]
+        # if key in self._cache:
+        #     self._cache_order.remove(key)
+        # elif len(self._cache) >= self.cache_size:
+        #     # Remove least recently used item
+        #     oldest_key = self._cache_order.pop(0)
+        #     del self._cache[oldest_key]
         
-        self._cache[key] = data
-        self._cache_order.append(key)
+        # self._cache[key] = data
+        # self._cache_order.append(key)
+        pass
 
     @property
     def raw_file_names(self):
@@ -400,8 +401,8 @@ class ComplexDataset(Dataset):
         key = self.keys[idx]
         
         # Check cache first
-        if key in self._cache:
-            return self._cache[key]
+        # if key in self._cache:
+        #     return self._cache[key]
 
         # Setting 'processed_data_dir' takes priority than 'data_dir'.
         if self.processed_data_dir is not None:
