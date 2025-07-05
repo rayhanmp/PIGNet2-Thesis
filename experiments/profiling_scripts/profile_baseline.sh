@@ -2,7 +2,7 @@
 
 SEED=0
 ROOT_DIR=$(git rev-parse --show-toplevel)
-DATA_DIR=${ROOT_DIR}/dataset/PDBbind-v2020
+DATA_DIR=${ROOT_DIR}/processed_features
 EXE_DIR=${ROOT_DIR}/src
 EXPERIMENT_NAME=profiling/baseline/${SEED}
 
@@ -14,7 +14,7 @@ date
 python -u ${EXE_DIR}/exe/train.py \
   experiment_name=${EXPERIMENT_NAME} \
   data=[messi/scoring] \
-  data.scoring.root_data_dir=${DATA_DIR}/scoring \
+  data.scoring.processed_data_dir=${DATA_DIR}/train \
   data.scoring.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/scoring \
   model=pignet_morse \
   model.short_range_A=2.1 \
