@@ -109,8 +109,11 @@ def main(config: DictConfig):
     writer = SummaryWriter(config.run.tensorboard_dir)
 
     # MLflow setup
-    mlflow.set_tracking_uri(config.run.mlflow_uri)
-    mlflow.set_experiment(config.run.experiment_name)
+    try:
+        mlflow.set_tracking_uri(config.run.mlflow_uri)
+        mlflow.set_experiment(config.run.experiment_name)
+    except Exception as e:
+        print(f"Error setting up MLflow: {e}")
 
     history = {
     "epoch": [],
@@ -121,7 +124,10 @@ def main(config: DictConfig):
     }
 
     with mlflow.start_run(run_name=config.run.run_name):
-        mlflow.log_params(OmegaConf.to_container(config, resolve=True))
+        try:
+            mlflow.log_params(OmegaConf.to_container(config, resolve=True))
+        except Exception as e:
+            print(f"Error logging parameters to MLflow: {e}")
 
         for epoch in range(last_epoch + 1, config.run.num_epochs + 1):
             start_time = time.time()
@@ -170,17 +176,20 @@ def main(config: DictConfig):
             writer.add_scalar("tau/test", test_tau, epoch)
 
             # Log to MLflow
-            for k, v in train_losses.items():
-                mlflow.log_metric(f"train_loss_{k}", v, step=epoch)
-            for k, v in test_losses.items():
-                mlflow.log_metric(f"test_loss_{k}", v, step=epoch)
-            mlflow.log_metric("R2/train", train_r2, step=epoch)
-            mlflow.log_metric("R2/test", test_r2, step=epoch)
-            mlflow.log_metric("R/train", train_r, step=epoch)
-            mlflow.log_metric("R/test", test_r, step=epoch)
-            mlflow.log_metric("tau/train", train_tau, step=epoch)
-            mlflow.log_metric("tau/test", test_tau, step=epoch)
-            mlflow.log_metric("epoch_time", end_time - start_time, step=epoch)
+            try:
+                for k, v in train_losses.items():
+                    mlflow.log_metric(f"train_loss_{k}", v, step=epoch)
+                for k, v in test_losses.items():
+                    mlflow.log_metric(f"test_loss_{k}", v, step=epoch)
+                mlflow.log_metric("R2/train", train_r2, step=epoch)
+                mlflow.log_metric("R2/test", test_r2, step=epoch)
+                mlflow.log_metric("R/train", train_r, step=epoch)
+                mlflow.log_metric("R/test", test_r, step=epoch)
+                mlflow.log_metric("tau/train", train_tau, step=epoch)
+                mlflow.log_metric("tau/test", test_tau, step=epoch)
+                mlflow.log_metric("epoch_time", end_time - start_time, step=epoch)
+            except Exception as e:
+                print(f"Error logging to MLflow: {e}")
 
             history["epoch"].append(epoch)
             history["train_loss_total"].append(train_losses.get("total", 0))
@@ -191,8 +200,11 @@ def main(config: DictConfig):
             if epoch == 1 or epoch % 50 == 0:
                 save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
                 utils.save_state(save_path, epoch, model, optimizer)
-
-        mlflow.pytorch.log_model(model, artifact_path="model")
+    
+        try:
+            mlflow.pytorch.log_model(model, artifact_path="model")
+        except Exception as e:
+            print(f"Error logging model to MLflow: {e}")
 
 if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = False
