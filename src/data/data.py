@@ -148,7 +148,7 @@ def mol_to_data(
 
     # Pre-allocate tensors for better memory efficiency
     data = Data()
-    
+
     # Node features - vectorized operation
     x = torch.tensor([atom_to_features(atom) for atom in atoms], dtype=torch.float)
     data.x = x
@@ -182,17 +182,17 @@ def mol_to_data(
     vdw_radii = torch.tensor([get_vdw_radius(atom) for atom in atoms], dtype=torch.float)
     atom_charges = torch.tensor([atom.GetFormalCharge() for atom in atoms], dtype=torch.float)
     metals = torch.tensor([atom.GetSymbol() in chem.METALS for atom in atoms], dtype=torch.bool)
-    
+
     # SMARTS patterns - compute once and reuse
     pattern = Chem.MolFromSmarts(chem.H_DONOR_SMARTS)
     h_donor_matches = {idx for match in mol.GetSubstructMatches(pattern) for idx in match}
     pattern = Chem.MolFromSmarts(chem.H_ACCEPTOR_SMARTS)
     h_acceptor_matches = {idx for match in mol.GetSubstructMatches(pattern) for idx in match}
-    
+
     # Convert matches to masks
     h_donors = torch.tensor([idx in h_donor_matches for idx in range(num_atoms)], dtype=torch.bool)
     h_acceptors = torch.tensor([idx in h_acceptor_matches for idx in range(num_atoms)], dtype=torch.bool)
-    
+
     # Hydrophobes - optimized version
     hydrophobes = []
     for atom in atoms:
@@ -231,28 +231,28 @@ def get_complex_edges(
     """
     # Optimized distance calculation using cdist
     D = torch.cdist(pos1, pos2)
-    
+
     # Create mask for distances within range
     mask = (min_distance <= D) & (D <= max_distance)
-    
+
     # Get indices of connected atoms
     i, j = torch.nonzero(mask, as_tuple=True)
-    
+
     # Shift j indices by pos1.size(0)
     j_shifted = j + pos1.size(0)
-    
+
     # Create bidirectional edges
     edge_index = torch.stack([
         torch.cat([i, j_shifted]),
         torch.cat([j_shifted, i])
     ])
-    
+
     # Handle case with no edges
     if edge_index.numel() == 0:
         edge_index = edge_index.view(2, 0).long()
     else:
         edge_index = edge_index.long()
-    
+
     return edge_index
 
 
@@ -351,24 +351,30 @@ class ComplexDataset(Dataset):
         self.pos_noise_max = pos_noise_max
         self.num_workers = num_workers
         self.cache_size = cache_size
-        
+
         # Initialize cache
         # self._cache = {}
         # self._cache_order = []
-        
+
         # Pre-compute labels if available
         if id_to_y is not None:
             self.labels = {k: v * -1.36 for k, v in id_to_y.items()}
+            print(f"Loaded {len(self.labels)} labels:")
+            for k, v in list(self.labels.items())[:10]:  # Print first 10 for debugging
+                print(f"  {k}: {v}")
+            if len(self.labels) > 10:
+                print(f"  ... and {len(self.labels) - 10} more labels")
         else:
+            print("No labels provided")
             self.labels = None
-        
+
         # Set root for PyG compatibility - use a default temp directory if not provided
         if root is None:
             import tempfile
             self._root = tempfile.mkdtemp(prefix="pignet_dataset_")
         else:
             self._root = root
-            
+
         super().__init__(root=self._root)
 
     def _update_cache(self, key: str, data: Data):
@@ -379,7 +385,7 @@ class ComplexDataset(Dataset):
         #     # Remove least recently used item
         #     oldest_key = self._cache_order.pop(0)
         #     del self._cache[oldest_key]
-        
+
         # self._cache[key] = data
         # self._cache_order.append(key)
         pass
@@ -399,7 +405,7 @@ class ComplexDataset(Dataset):
 
     def get(self, idx) -> Data:
         key = self.keys[idx]
-        
+
         # Check cache first
         # if key in self._cache:
         #     return self._cache[key]
@@ -433,6 +439,7 @@ class ComplexDataset(Dataset):
 
                 # Get label if available
                 label = self.labels.get(key) if self.labels is not None else None
+                print(f"Processing key '{key}': label = {label}")
 
                 data = complex_to_data(
                     mol_ligand,
@@ -441,7 +448,7 @@ class ComplexDataset(Dataset):
                     key,
                     self.conv_range,
                     # Pass the dataset's noise parameters to mol_to_data
-                    pos_noise_std=self.pos_noise_std, 
+                    pos_noise_std=self.pos_noise_std,
                     pos_noise_max=self.pos_noise_max,
                 )
                 self._update_cache(key, data)
@@ -458,17 +465,17 @@ class ComplexDataset(Dataset):
             return
 
         os.makedirs(self.processed_data_dir, exist_ok=True)
-        
+
         # Process data in parallel if num_workers > 0
         if self.num_workers > 0:
             from concurrent.futures import ProcessPoolExecutor
-            
+
             # Helper function to pass instance methods for ProcessPoolExecutor
             def process_item(item_key):
                 # When loading from data_dir, self.get will call complex_to_data,
                 # which calls mol_to_data with self.pos_noise_std and self.pos_noise_max.
                 # The data is then saved.
-                processed_data = self.get(self.keys.index(item_key)) 
+                processed_data = self.get(self.keys.index(item_key))
                 if processed_data is not None:
                     # Saving logic is now inside _process_single, called below if not parallel
                     # For parallel, we need to ensure _process_single is called or its logic replicated
@@ -504,6 +511,6 @@ class ComplexDataset(Dataset):
         except ValueError:
             print(f"Key {key} not found in dataset keys during processing.")
             return
-        
+
         if data is not None:
             torch.save(data, data_path)

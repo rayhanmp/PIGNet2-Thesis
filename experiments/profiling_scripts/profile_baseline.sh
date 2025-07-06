@@ -14,7 +14,7 @@ date
 python -u ${EXE_DIR}/exe/train.py \
   experiment_name=${EXPERIMENT_NAME} \
   data=[messi/scoring] \
-  data.scoring.processed_data_dir=${DATA_DIR}/train \
+  data.scoring.processed_data_dir=${DATA_DIR}/ \
   data.scoring.key_dir=${EXE_DIR}/keys/train/PDBbind_v2020/scoring \
   model=pignet_morse \
   model.short_range_A=2.1 \
@@ -33,4 +33,4 @@ python -u ${EXE_DIR}/exe/train.py \
 
 echo "Profiling completed. Check profiler_output/baseline/ for results."
 echo "Open epoch_X_trace.json files in Chrome at chrome://tracing"
-date 
+date
