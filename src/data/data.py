@@ -409,16 +409,14 @@ class ComplexDataset(Dataset):
             data_path = os.path.join(self.processed_data_dir, key + ".pt")
             try:
                 data = torch.load(data_path, map_location='cpu')
-                if not hasattr(data, "y") or data.y is None:
-                    affinity = self.affinity_dict[key]          # already parsed at __init__
-                    data.y = torch.tensor([affinity], dtype=torch.float32)
-                self._update_cache(key, data)
+                # self._update_cache(key, data)
                 return data
             except Exception as e:
+                # File doesn't exist or can't be loaded, fall back to data_dir
                 print(f"Error loading {data_path}: {e}")
-                return None
+                pass
 
-        elif self.data_dir is not None:
+        if self.data_dir is not None:
             data_path = os.path.join(self.data_dir, key)
             try:
                 # Load data with error handling
