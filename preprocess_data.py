@@ -1,10 +1,12 @@
 import os
 from src.data.data import ComplexDataset
-from src.data.utils import read_keys
+from src.data.utils import read_keys, read_labels
 
 # Read training keys from the same source as training
 key_dir = "src/keys/train/PDBbind_v2020/scoring"
 train_keys, test_keys = read_keys(key_dir)
+label_file = "dataset/PDBbind-v2020/scoring/pdb_to_affinity.txt"  
+id_to_y = read_labels(label_file)
 
 print(f"Found {len(train_keys)} training samples")
 print(f"Found {len(test_keys)} test samples")
@@ -19,6 +21,7 @@ train_dataset = ComplexDataset(
     data_dir="dataset/PDBbind-v2020/scoring/data",
     processed_data_dir="processed_features/train/",
     conv_range=(0.0, 8.0),  # From model config
+    id_to_y=id_to_y,
 )
 
 # Process all training data offline
