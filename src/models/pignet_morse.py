@@ -54,7 +54,7 @@ class PIGNetMorse(PIGNet):
         self.nn_gb_radius = Sequential(
             "x",
             [
-                (Linear(dim_gnn * 2, dim_mlp), "x -> x"),
+                (Linear(dim_gnn, dim_mlp), "x -> x"),
                 ReLU(),
                 Linear(dim_mlp, 1),
                 ReLU(),

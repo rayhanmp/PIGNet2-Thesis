@@ -20,7 +20,7 @@ python -u ${EXE_DIR}/exe/train.py \
   run.lr=4e-4 \
   run.batch_size=512 \
   run.save_every=1 \
-  run.num_epochs=5000 \
+  run.num_epochs=2000 \
   run.num_workers=12 \
   run.pin_memory=true \
   run.seed=${SEED}
