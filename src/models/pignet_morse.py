@@ -51,12 +51,25 @@ class PIGNetMorse(PIGNet):
                 ReLU(),
             ],
         )
+        self.nn_gb_radius = Sequential(
+            "x",
+            [
+                (Linear(dim_gnn * 2, dim_mlp), "x -> x"),
+                ReLU(),
+                Linear(dim_mlp, 1),
+                ReLU(),
+            ],
+        )
 
         self.hbond_coeff = Parameter(torch.tensor([0.714]))
         self.metal_ligand_coeff = Parameter(torch.tensor([1.0]))
         self.hydrophobic_coeff = Parameter(torch.tensor([0.216]))
         self.rotor_coeff = Parameter(torch.tensor([0.102]))
         self.ionic_coeff = Parameter(torch.tensor([1.0]))  # NOT USED
+
+        # Generalised born coeff
+        if config.model.get("include_gb", False):
+            self.gb_coeff = Parameter(torch.tensor([1.0]))
 
     def forward(self, sample: Batch):
         cfg = self.config.model
@@ -92,6 +105,12 @@ class PIGNetMorse(PIGNet):
             + sample.vdw_radii[edge_index_i[1]]
             + dvdw_radii
         )
+
+        # Predict born radii for each atom
+        born_radii = None
+        if cfg.get("include_gb", False):
+            born_radii = self.nn_gb_radius(x).squeeze(-1)
+            born_radii = born_radii * cfg.gb_radii_scale[1] + cfg.gb_radii_scale[0]
 
         # Prepare a pair-energies contrainer: (energy_types, pairs)
         energies_pairs = torch.zeros(5, D.numel()).to(self.device)
@@ -146,8 +165,8 @@ class PIGNetMorse(PIGNet):
         if cfg.get("include_ionic", False):
             # Note the sign of `minima_ionic`
             minima_ionic = self.ionic_coeff**2 * (
-                sample.atom_charges[edge_index_i[0]]
-                * sample.atom_charges[edge_index_i[1]]
+                sample.partial_charges[edge_index_i[0]]
+                * sample.partial_charges[edge_index_i[1]]
             )
             energies_pairs[4] = physics.linear_potential(
                 D, R, minima_ionic, *cfg.ionic_cutoffs

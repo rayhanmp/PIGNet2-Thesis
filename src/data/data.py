@@ -180,7 +180,12 @@ def mol_to_data(
 
     # Pre-compute all atom properties in parallel
     vdw_radii = torch.tensor([get_vdw_radius(atom) for atom in atoms], dtype=torch.float)
-    atom_charges = torch.tensor([atom.GetFormalCharge() for atom in atoms], dtype=torch.float)
+    
+    # Use random dummy partial charges instead of formal charges for now
+    # atom_charges = torch.tensor([atom.GetFormalCharge() for atom in atoms], dtype=torch.float)
+    atom_charges = torch.normal(0.0, 0.2, size=(num_atoms,))  # Random charges ~ N(0, 0.2)
+    atom_charges = atom_charges.clamp(-0.8, 0.8)  # Keep them reasonable
+    
     metals = torch.tensor([atom.GetSymbol() in chem.METALS for atom in atoms], dtype=torch.bool)
 
     # SMARTS patterns - compute once and reuse
@@ -211,6 +216,7 @@ def mol_to_data(
     data.is_h_donor = h_donors
     data.is_h_acceptor = h_acceptors
     data.is_hydrophobic = hydrophobes
+    data.partial_charges = atom_charges
 
     return data
 
