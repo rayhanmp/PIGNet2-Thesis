@@ -186,3 +186,92 @@ def interaction_masks(
         mask_ionic = mask_ionic.to(edge_index.device)
         masks = torch.cat((masks, mask_ionic.unsqueeze(0)))
     return masks
+
+
+""" BELOW ARE MODIFIED FUNCTIONS FROM THE ORIGINAL CODE """
+
+def generalised_born_energy(
+    D: FloatTensor,
+    born_radii: FloatTensor,
+    partial_charges: FloatTensor,
+    edge_index: LongTensor,
+    dielectric_in: float = 1.0,
+    dielectric_out: float = 78.5,
+) -> FloatTensor:
+    """\
+    Args:
+        D: (pairs,)
+            Pairwise distances.
+        born_radii: (atoms,)
+            Born radii of an atom.
+        partial_charges: (atoms,)
+            Partial charges of an atom.
+        edge_index: (2, pairs)
+            Edge index for the pair of atoms.
+        dielectric_in: float
+            Interior dielectric constant.
+        dielectric_out: float
+            Solvent dielectric constant (assumed to be water).
+
+    Return: (pairs,)
+        GB energy for the pair of atoms.
+    """
+
+    # Constants
+    one_over_4pi_eps0 = 332.0637  # kcal/(mol*Angstrom*e^2) conversion factor
+
+    # Partial charges of the atoms
+    qi = partial_charges[edge_index[0]]
+    qj = partial_charges[edge_index[1]]
+
+    # Born radii of the atoms
+    Ri = born_radii[edge_index[0]]
+    Rj = born_radii[edge_index[1]]
+
+    # Calculate the distance between the atoms
+    rij_squared = D**2
+
+    # Calculate the pair born radii
+    RiRj = Ri*Rj
+
+    # Calculate effective born radii for the pair
+    # f_GB = sqrt(r_ij^2 + RiRj) * exp(-r_ij^2 / (4 * R_i * R_j)))
+    exp_term = torch.exp(-rij_squared / (4.0 * RiRj + 1e-8))  # Small epsilon to avoid division by zero
+    f_GB = torch.sqrt(rij_squared + RiRj * exp_term)
+
+    # Calculate the GB energy
+    # E_GB = -0.5 * (1/eps_in - 1/eps_out) * sum_ij (q_i * q_j / f_GB)
+    prefactor = -0.5 * one_over_4pi_eps0 * (1.0/dielectric_in - 1.0/dielectric_out)
+    energyPair = prefactor * (qi * qj) / f_GB
+
+    return energyPair
+
+def self_born_energy(
+    born_radii: FloatTensor,
+    partial_charges: FloatTensor,
+    dielectric_in: float = 1.0,
+    dielectric_out: float = 78.5,
+) -> FloatTensor:
+    """\
+    Args:
+        born_radii: (atoms,)
+            Born radii of an atom.
+        partial_charges: (atoms,)
+            Partial charges of an atom.
+        dielectric_in: float
+            Interior dielectric constant.
+        dielectric_out: float
+            Solvent dielectric constant (assumed to be water).
+
+    Return: (atoms,)
+        GB energy for the atom.
+    """
+
+    # Constants
+    one_over_4pi_eps0 = 332.0637  # kcal/(mol*Angstrom*e^2) conversion factor
+
+    # Self energy: E_self = -0.5 * (1/eps_in - 1/eps_out) * q_i^2 / R_i
+    prefactor = -0.5 * one_over_4pi_eps0 * (1.0/dielectric_in - 1.0/dielectric_out)
+    self_energy = prefactor * partial_charges * partial_charges / (born_radii + 1e-8) # Small epsilon to avoid division by zero
+
+    return self_energy
