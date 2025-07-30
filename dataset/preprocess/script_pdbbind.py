@@ -1,15 +1,18 @@
 from pathlib import Path
 import subprocess
 
+# Root directory
+root_dir = Path("/refined-set")
+
 # Path to the list file
-list_file = Path("pdbbind_keys.txt")
+list_file = root_dir / "pdbbind_keys.txt"
 
 # Read all PDB IDs in that list
 with list_file.open("r") as f:
     pdb_ids = [line.strip() for line in f if line.strip()]
 
 for pdb_id in pdb_ids:
-    folder = Path(pdb_id)
+    folder = root_dir / pdb_id
     protein_file = folder / f"{pdb_id}_protein.pdb"
     ligand_file = folder / f"{pdb_id}_ligand.sdf"
 
@@ -21,4 +24,4 @@ for pdb_id in pdb_ids:
             "-l", str(ligand_file)
         ])
     else:
-        print(f"[WARN] Skipping {pdb_id}: missing file(s)")
+        print(f"[WARN] Skipping {pdb_id}: missing_
