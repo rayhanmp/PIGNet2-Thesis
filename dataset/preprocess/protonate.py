@@ -77,6 +77,10 @@ def protonate_ligand(
     Args:
         kwargs: kwargs for `dimorphite_dl.protonate_mol`.
     """
+
+    if mol is None:
+        raise ValueError("[ERROR] Received None as input to protonate_ligand")
+    
     protonated_mol = protonate_mol(
         mol, min_ph=min_ph, max_ph=max_ph, pka_precision=pka_precision, **kwargs
     )

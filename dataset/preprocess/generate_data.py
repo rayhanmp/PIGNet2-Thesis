@@ -306,7 +306,7 @@ def main(args: argparse.Namespace):
             if not args.no_prot_sdf:
                 mol_ligand = protonate_ligand(mol_ligand)
                 if not mol_ligand:
-                    print("protonate_ligand failed:", output_name, file=sys.stderr)
+                    print("protonate_ligand failed:", f"{args.ligand_file.stem}_{mol_idx}", file=sys.stderr)
                     exit()
 
             mol_target = extract_binding_pocket(mol_ligand, pdb_file)
@@ -326,7 +326,7 @@ def main(args: argparse.Namespace):
         if not args.no_prot_sdf:
             mol_ligand = protonate_ligand(mol_ligand)
             if not mol_ligand:
-                print("protonate_ligand failed:", output_name, file=sys.stderr)
+                print("protonate_ligand failed:", args.ligand_file.stem, file=sys.stderr)
                 exit()
 
         mol_target = extract_binding_pocket(mol_ligand, pdb_file)
