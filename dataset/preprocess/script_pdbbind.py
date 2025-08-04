@@ -2,10 +2,10 @@ from pathlib import Path
 import subprocess
 
 # Root directory
-root_dir = Path("/refined-set")
+root_dir = Path("PDBbind_v2020_refined/refined-set")
 
 # Path to the list file
-list_file = root_dir / "pdbbind_keys.txt"
+list_file = Path("pdbbind_keys.txt")
 
 # Read all PDB IDs in that list
 with list_file.open("r") as f:
