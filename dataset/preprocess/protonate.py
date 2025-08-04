@@ -40,6 +40,10 @@ def protonate_mol(
     }
     engine = dimorphite_dl.DimorphiteDL(**params)
 
+    # Check if the molecule is None
+    if mol is None:
+        raise ValueError("[ERROR] Received None as input to protonate_mol")
+    
     smi = Chem.MolToSmiles(mol)
     protonated_smi = engine.protonate(smi)[0]
     protonated_mol = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(protonated_smi), mol)
