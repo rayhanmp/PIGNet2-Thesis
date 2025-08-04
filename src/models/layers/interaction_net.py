@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch.nn import GRUCell, LayerNorm, GELU
+from torch.nn import GRUCell
 from torch_geometric.nn import Linear, MessagePassing
 from torch_geometric.utils import add_self_loops
 
@@ -21,9 +21,6 @@ class InteractionNet(MessagePassing):
         self.add_self_loops = add_self_loops
         self.aggr = aggr
 
-        self.norm = LayerNorm(node_features)
-        self.gelu = GELU()
-
     def forward(self, x, edge_index):
         # Need to pass num_nodes to handle isolated nodes (in proteins).
         num_nodes = x.size(0)
@@ -38,7 +35,7 @@ class InteractionNet(MessagePassing):
         return self.W2(x_j)
 
     def update(self, inputs, x):
-        x_prime = self.gelu(self.norm(self.W1(x) + inputs))
+        x_prime = self.relu(self.W1(x) + inputs)
         return self.rnn(x_prime, x)
 
     def compare(self, x, sample):
@@ -74,7 +71,7 @@ class InteractionNet(MessagePassing):
             if not srcs.numel():
                 continue
             A[i] = torch.max(M[srcs], 0).values
-        x_prime = self.gelu(self.norm(self.W1(x1) + A))
+        x_prime = self.relu(self.W1(x1) + A)
         x1_updated = self.rnn(x_prime, x1)
 
         # protein <- ligand
@@ -86,7 +83,7 @@ class InteractionNet(MessagePassing):
             if not srcs.numel():
                 continue
             A[i] = torch.max(M[srcs], 0).values
-        x_prime = self.gelu(self.norm(self.W1(x2) + A))
+        x_prime = self.relu(self.W1(x2) + A)
         x2_updated = self.rnn(x_prime, x2)
 
         return torch.cat((x1_updated, x2_updated), 0)
