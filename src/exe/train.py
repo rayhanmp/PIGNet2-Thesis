@@ -156,6 +156,12 @@ def main(config: DictConfig):
             logger.info(f"Profiler enabled for epochs: {profiler_epochs}")
             logger.info(f"Profiler output directory: {profiler_output_dir}")
 
+        # Track best model based on test loss for the scoring task (or first available task)
+        best_epoch = -1
+        best_metric = float("inf")
+        best_ckpt_path = None
+        best_metric_task = None
+
         for epoch in range(last_epoch + 1, config.run.num_epochs + 1):
             start_time = time.time()
             data.sample_keys()
@@ -190,6 +196,27 @@ def main(config: DictConfig):
             test_losses = utils.get_losses(model)
             test_r, test_r2, test_tau = utils.get_stats(model, task_name)
             utils.write_predictions(model, config, False)
+
+            # Update best checkpoint based on test loss of the scoring task (fallback to first task)
+            metric_task = "scoring" if "scoring" in test_losses else None
+            if metric_task is None:
+                for k in test_losses.keys():
+                    if k != "dvdw":
+                        metric_task = k
+                        break
+            if metric_task is not None:
+                current_metric = test_losses[metric_task]
+                if current_metric < best_metric:
+                    best_metric = current_metric
+                    best_epoch = epoch
+                    best_metric_task = metric_task
+                    best_ckpt_path = os.path.join(config.run.checkpoint_dir, "save_best.pt")
+                    utils.save_state(best_ckpt_path, epoch, model, optimizer)
+                    try:
+                        mlflow.log_metric(f"best_test_loss_{metric_task}", best_metric, step=epoch)
+                        mlflow.log_metric("best_epoch_so_far", best_epoch, step=epoch)
+                    except Exception as e:
+                        print(f"Error logging best-so-far metrics to MLflow: {e}")
 
             # Stop profiler and save results
             if should_profile and profiler_context:
@@ -267,6 +294,16 @@ def main(config: DictConfig):
                 utils.save_state(save_path, epoch, model, optimizer)
     
         try:
+            # Log best checkpoint and metrics at the end
+            if best_ckpt_path and os.path.exists(best_ckpt_path):
+                try:
+                    mlflow.log_metric("best_epoch", best_epoch)
+                    if best_metric_task is not None:
+                        mlflow.log_metric(f"best_test_loss_{best_metric_task}", best_metric)
+                    mlflow.log_artifact(best_ckpt_path, artifact_path="best_checkpoint")
+                except Exception as e:
+                    print(f"Error logging best checkpoint to MLflow: {e}")
+
             mlflow.pytorch.log_model(model, artifact_path="model")
         except Exception as e:
             print(f"Error logging model to MLflow: {e}")
@@ -275,3 +312,4 @@ if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     main()
+
