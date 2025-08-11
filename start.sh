@@ -3,5 +3,7 @@ conda run -n pignet2 pip install --no-cache-dir -r requirements.txt && echo "[SE
 echo "[SETUP] Downloading dataset"; \
 bash dataset/download.sh && echo "[SETUP] Download completed"; \
 bash dataset/untar.sh && echo "[SETUP] Decompression completed"; \
+echo "[SETUP] Preprocessing dataset"; \
+conda run -n pignet2 python preprocess_data.py && echo "[SETUP] Preprocessing completed"; \
 bash experiments/training_scripts/baseline.sh && echo "[SETUP] Training completed";
 
