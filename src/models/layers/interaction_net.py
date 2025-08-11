@@ -35,7 +35,7 @@ class InteractionNet(MessagePassing):
         return self.W2(x_j)
 
     def update(self, inputs, x):
-        x_prime = self.relu(self.W1(x) + inputs)
+        x_prime = F.relu(self.W1(x) + inputs)
         return self.rnn(x_prime, x)
 
     def compare(self, x, sample):
@@ -71,7 +71,7 @@ class InteractionNet(MessagePassing):
             if not srcs.numel():
                 continue
             A[i] = torch.max(M[srcs], 0).values
-        x_prime = self.relu(self.W1(x1) + A)
+        x_prime = F.relu(self.W1(x1) + A)
         x1_updated = self.rnn(x_prime, x1)
 
         # protein <- ligand
@@ -83,7 +83,7 @@ class InteractionNet(MessagePassing):
             if not srcs.numel():
                 continue
             A[i] = torch.max(M[srcs], 0).values
-        x_prime = self.relu(self.W1(x2) + A)
+        x_prime = F.relu(self.W1(x2) + A)
         x2_updated = self.rnn(x_prime, x2)
 
         return torch.cat((x1_updated, x2_updated), 0)
