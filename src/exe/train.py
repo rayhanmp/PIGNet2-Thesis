@@ -100,7 +100,10 @@ def main(config: DictConfig):
     model, last_epoch = utils.initialize_state(device, checkpoint, config, data.num_features)
     optimizer = model.configure_optimizers()
     if checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        try:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        except Exception as e:
+            logger.warning(f"Could not load optimizer state from checkpoint: {e}. Using freshly initialized optimizer.")
 
     for task in data.tasks:
         if dir_path := config.data[task].processed_data_dir:

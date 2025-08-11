@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.nn import Dropout, Module, ModuleList, Parameter, ReLU, Sigmoid, Tanh
 from torch.nn.parameter import UninitializedParameter
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch_geometric.data import Batch
 from torch_geometric.nn import Linear, Sequential
 from torch_scatter import scatter
@@ -394,11 +394,40 @@ class PIGNet(Module):
             self.predictions[task][key] = pred.tolist()
 
     def configure_optimizers(self):
-        return Adam(
-            self.parameters(),
-            lr=self.config.run.lr,
-            weight_decay=self.config.run.weight_decay,
-        )
+        lr = float(self.config.run.lr)
+        weight_decay = float(self.config.run.weight_decay)
+
+        decay_params = []
+        no_decay_params = []
+
+        physics_coeff_names = {
+            "hbond_coeff",
+            "hydrophobic_coeff",
+            "rotor_coeff",
+            "gb_coeff",
+            "ionic_coeff",
+        }
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            is_bias = name.endswith(".bias") or name == "bias"
+            is_physics_coeff = any(name.endswith(n) for n in physics_coeff_names)
+            is_norm_like = param.dim() == 1
+
+            if (not is_bias) and (not is_norm_like) and (not is_physics_coeff):
+                decay_params.append(param)
+            else:
+                no_decay_params.append(param)
+
+        param_groups = []
+        if decay_params:
+            param_groups.append({"params": decay_params, "weight_decay": weight_decay})
+        if no_decay_params:
+            param_groups.append({"params": no_decay_params, "weight_decay": 0.0})
+
+        return AdamW(param_groups, lr=lr)
 
     def reset_log(self):
         """Reset logs. Intended to be called every epoch.
