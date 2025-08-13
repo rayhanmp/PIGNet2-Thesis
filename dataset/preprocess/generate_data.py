@@ -9,14 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from protonate import protonate_ligand, protonate_pdb
-from pymol import cmd
+from pymol import cmd, chempy
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
 PathLike = Union[str, os.PathLike]
 
 MAX_NUM_RETRIALS = 20
-
 
 def extract(
     receptor_pdb: Path,
@@ -34,6 +33,9 @@ def extract(
     connect_cutoff: Optional[float] = None,
     tmp_dir: Optional[Union[str, Path]] = None,
     silent: bool = False,
+    pqr_path: Optional[Union[str, Path]] = None,
+    charge_tolerance: float = 0.001,
+    include_pqr_hydrogens: bool = False,
 ) -> Optional[AllChem.Mol]:
     cmd.reinitialize()
     cmd.set("max_threads", 1)
@@ -77,6 +79,15 @@ def extract(
     os.close(fd)
     cmd.save(tmp_path, "%pocket")
     (pocket,) = read_mols(tmp_path, removeHs=remove_h_in_final_save)
+    # Assign partial charges from PQR if provided
+    if pocket is not None and pqr_path is not None:
+        try:
+            pqr_models = _read_pqr_models(pqr_path, include_hydrogens=include_pqr_hydrogens)
+            if pqr_models:
+                _assign_partial_charges_by_coords(pocket, pqr_models[0], tolerance=charge_tolerance)
+        except Exception as e:
+            if not silent:
+                print(f"Warning: failed assigning PQR charges to pocket: {e}", file=sys.stderr)
 
     # If failed, retry after obabel re-save.
     if pocket is None and retry_with_obabel:
@@ -94,6 +105,15 @@ def extract(
         pybel_mol.write(tmp_ext.lstrip("."), tmp_path2, overwrite=True)
 
         (pocket,) = read_mols(tmp_path2, removeHs=remove_h_in_final_save)
+        # Assign partial charges from PQR if provided
+        if pocket is not None and pqr_path is not None:
+            try:
+                pqr_models = _read_pqr_models(pqr_path, include_hydrogens=include_pqr_hydrogens)
+                if pqr_models:
+                    _assign_partial_charges_by_coords(pocket, pqr_models[0], tolerance=charge_tolerance)
+            except Exception as e:
+                if not silent:
+                    print(f"Warning: failed assigning PQR charges to pocket: {e}", file=sys.stderr)
         os.remove(tmp_path2)
 
     # os.remove(tmp_path)
@@ -147,7 +167,6 @@ def _rebond_monovalent_oxygens(selection: str = "het"):
             bond_order = 1
         cmd.bond(f"id {oxygen.id}", f"id {other.id}", bond_order)
 
-
 def _neutralize_pi_oxygens(selection: str = "polymer"):
     """Neutralize '=[O-]', which somtimes appears in ASP and GLU."""
     model: chempy.models.Indexed = cmd.get_model(selection)
@@ -182,6 +201,9 @@ def read_mols(
     sanitize: bool = True,
     removeHs: bool = True,
     rebond: bool = True,
+    pqr_path: Optional[Union[str, Path]] = None,
+    charge_tolerance: float = 0.001,
+    include_pqr_hydrogens: bool = False,
 ) -> List[Optional[Chem.Mol]]:
     kwargs = {"sanitize": sanitize, "removeHs": removeHs}
     path = Path(file_path)
@@ -191,7 +213,14 @@ def read_mols(
     elif path.suffix == ".mol2":
         mols = mols_from_mol2_file(path, **kwargs)
     elif path.suffix == ".pdb":
-        mols = mols_from_pdb_file(path, rebond=rebond, **kwargs)
+        mols = mols_from_pdb_file(
+            path,
+            rebond=rebond,
+            pqr_path=pqr_path,
+            charge_tolerance=charge_tolerance,
+            include_pqr_hydrogens=include_pqr_hydrogens,
+            **kwargs,
+        )
     elif path.suffix == ".smi":
         mols = mols_from_smi_file(path, sanitize=sanitize)
     else:
@@ -235,6 +264,9 @@ def mols_from_pdb_file(
     sanitize: bool = True,
     removeHs: bool = True,
     rebond: bool = True,
+    pqr_path: Optional[Union[str, Path]] = None,
+    charge_tolerance: float = 0.001,
+    include_pqr_hydrogens: bool = False,
 ) -> List[Chem.Mol]:
     """Read molecules from a PDB file.
 
@@ -250,7 +282,114 @@ def mols_from_pdb_file(
         for block in blocks
         if block.strip() and block.strip() != "END"
     ]
+    # Assign partial charges from companion PQR, if provided
+    if pqr_path is not None:
+        try:
+            pqr_models = _read_pqr_models(pqr_path, include_hydrogens=include_pqr_hydrogens)
+            for i, mol in enumerate(mols):
+                if mol is None:
+                    continue
+                pqr_atoms = pqr_models[i] if i < len(pqr_models) else (pqr_models[0] if pqr_models else [])
+                if pqr_atoms:
+                    _assign_partial_charges_by_coords(mol, pqr_atoms, tolerance=charge_tolerance)
+        except Exception as e:
+            print(f"Warning: failed assigning PQR charges: {e}", file=sys.stderr)
     return mols
+
+
+def _read_pqr_models(
+    pqr_path: Union[str, Path],
+    include_hydrogens: bool = False,
+) -> List[List[Tuple[float, float, float, float]]]:
+    """Parse a PQR file into models of (x, y, z, charge).
+
+    Tries fixed-width fields; falls back to float token extraction.
+    """
+    pqr_path = Path(pqr_path)
+    with pqr_path.open() as f:
+        text = f.read()
+
+    blocks = text.split("ENDMDL") if "ENDMDL" in text else [text]
+
+    def is_hydrogen_name(name: str) -> bool:
+        n = name.strip().upper()
+        return n.startswith("H") or n.startswith("D")
+
+    models: List[List[Tuple[float, float, float, float]]] = []
+    for block in blocks:
+        atoms: List[Tuple[float, float, float, float]] = []
+        for line in block.splitlines():
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+            # Try fixed-width parse
+            parsed = False
+            try:
+                if len(line) >= 62:
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                    charge = float(line[54:62].replace("D", "E"))
+                    atom_name = line[12:16]
+                    if (include_hydrogens or (not is_hydrogen_name(atom_name))):
+                        atoms.append((x, y, z, charge))
+                        parsed = True
+            except Exception:
+                parsed = False
+            if parsed:
+                continue
+            # Fallback: float token parse
+            parts = line.split()
+            atom_name = parts[2] if len(parts) > 2 else ""
+            if (not include_hydrogens) and is_hydrogen_name(atom_name):
+                continue
+            floats: List[float] = []
+            for tok in parts:
+                try:
+                    floats.append(float(tok.replace("D", "E")))
+                except ValueError:
+                    continue
+            if len(floats) >= 4:
+                x, y, z, charge = floats[0], floats[1], floats[2], floats[3]
+                atoms.append((x, y, z, charge))
+        if atoms:
+            models.append(atoms)
+    return models
+
+
+def _assign_partial_charges_by_coords(
+    mol: Chem.Mol,
+    pqr_atoms: List[Tuple[float, float, float, float]],
+    tolerance: float = 0.1,
+) -> int:
+    """Assign PartialCharge to RDKit mol atoms by nearest coordinate match.
+
+    Returns number of atoms assigned.
+    """
+    if mol is None or mol.GetNumAtoms() == 0 or not pqr_atoms:
+        return 0
+    conf = mol.GetConformer()
+    used = [False] * len(pqr_atoms)
+    assigned = 0
+    for atom_idx in range(mol.GetNumAtoms()):
+        pos = conf.GetAtomPosition(atom_idx)
+        best_j = -1
+        best_d2 = float("inf")
+        for j, (x, y, z, charge) in enumerate(pqr_atoms):
+            if used[j]:
+                continue
+            dx = pos.x - x
+            dy = pos.y - y
+            dz = pos.z - z
+            d2 = dx * dx + dy * dy + dz * dz
+            if d2 < best_d2:
+                best_d2 = d2
+                best_j = j
+        if best_j >= 0 and best_d2 <= tolerance * tolerance:
+            charge_val = float(pqr_atoms[best_j][3])
+            mol.GetAtomWithIdx(atom_idx).SetDoubleProp("PartialCharge", charge_val)
+            used[best_j] = True
+            assigned += 1
+    return assigned
 
 
 def mols_from_smi_file(
@@ -283,6 +422,9 @@ def extract_binding_pocket(
     ligand_mol: Chem.Mol,
     pdb_path: PathLike,
     distance: float = 5.0,
+    pqr_path: Optional[Union[str, Path]] = None,
+    charge_tolerance: float = 0.001,
+    include_pqr_hydrogens: bool = False,
 ) -> Optional[Chem.Mol]:
     with tempfile.NamedTemporaryFile(suffix=".sdf") as ligand_file:
         writer = Chem.SDWriter(ligand_file.name)
@@ -290,7 +432,14 @@ def extract_binding_pocket(
             writer.write(ligand_mol)
         finally:
             writer.close()
-        return extract(pdb_path, ligand_file.name, distance=distance)
+        return extract(
+            pdb_path,
+            ligand_file.name,
+            distance=distance,
+            pqr_path=pqr_path,
+            charge_tolerance=charge_tolerance,
+            include_pqr_hydrogens=include_pqr_hydrogens,
+        )
 
 
 def main(args: argparse.Namespace):
@@ -309,7 +458,12 @@ def main(args: argparse.Namespace):
                     print("protonate_ligand failed:", f"{args.ligand_file.stem}_{mol_idx}", file=sys.stderr)
                     exit()
 
-            mol_target = extract_binding_pocket(mol_ligand, pdb_file)
+            mol_target = extract_binding_pocket(
+                mol_ligand,
+                pdb_file,
+                pqr_path=getattr(args, "pqr_file", None),
+                charge_tolerance=getattr(args, "pqr_tolerance", 0.001),
+            )
             args.save_file_path.mkdir(parents=True, exist_ok=True)
 
             filename = (
@@ -329,7 +483,12 @@ def main(args: argparse.Namespace):
                 print("protonate_ligand failed:", args.ligand_file.stem, file=sys.stderr)
                 exit()
 
-        mol_target = extract_binding_pocket(mol_ligand, pdb_file)
+        mol_target = extract_binding_pocket(
+            mol_ligand,
+            pdb_file,
+            pqr_path=getattr(args, "pqr_file", None),
+            charge_tolerance=getattr(args, "pqr_tolerance", 0.001),
+        )
         args.save_file_path.mkdir(parents=True, exist_ok=True)
 
         filename = (
@@ -375,6 +534,18 @@ if __name__ == "__main__":
         type=str,
         help="filename prefix",
         default="",
+    )
+    parser.add_argument(
+        "--pqr_file",
+        type=Path,
+        help="optional companion protein .pqr file for partial charges",
+        default=None,
+    )
+    parser.add_argument(
+        "--pqr_tolerance",
+        type=float,
+        help="distance tolerance (Å) for PQR coordinate matching",
+        default=0.001,
     )
     args = parser.parse_args()
 
