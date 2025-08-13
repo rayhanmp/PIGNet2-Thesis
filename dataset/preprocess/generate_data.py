@@ -9,9 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from protonate import protonate_ligand, protonate_pdb
-from pymol import cmd, chempy
+from pymol import cmd
 from rdkit import Chem
 from rdkit.Chem import AllChem
+
+# Ensure RDKit preserves all properties when molecules are pickled
+Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
 PathLike = Union[str, os.PathLike]
 

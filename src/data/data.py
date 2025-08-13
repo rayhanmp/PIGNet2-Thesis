@@ -10,6 +10,8 @@ from torch_geometric.utils import dense_to_sparse
 
 from . import chem
 
+# Ensure RDKit preserves all properties when molecules are pickled
+Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
 def one_hot_encode(
     x: Any,
