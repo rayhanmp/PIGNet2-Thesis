@@ -112,8 +112,15 @@ class PIGNetMorse(PIGNet):
             born_radii = self.nn_gb_radius(x).squeeze(-1)
             born_radii = born_radii * cfg.gb_radii_scale[1] + cfg.gb_radii_scale[0]
 
-        # Prepare a pair-energies contrainer: (energy_types, pairs)
-        energies_pairs = torch.zeros(5, D.numel()).to(self.device)
+        # Prepare a pair-energies container: (energy_types, pairs)
+        # Base: vdW (Morse) + H-bond + Metal-Ligand + Hydrophobic = 4
+        num_energy_types = 4
+        if cfg.get("include_ionic", False):
+            num_energy_types += 1
+        if cfg.get("include_gb", False):
+            num_energy_types += 1  # pairwise GB term
+        energies_pairs = torch.empty(num_energy_types, D.numel()).to(self.device)
+        energy_idx = 0
 
         # vdW energy minima (well depths): (pairs,)
         vdw_epsilon = self.nn_vdw_epsilon(x_cat).squeeze(-1)
@@ -129,26 +136,64 @@ class PIGNetMorse(PIGNet):
             vdw_width * (cfg.vdw_width_scale[1] - cfg.vdw_width_scale[0])
             + cfg.vdw_width_scale[0]
         )
-        energies_pairs[0] = physics.morse_potential(
+        energies_pairs[energy_idx] = physics.morse_potential(
             D,
             R,
             vdw_epsilon,
             vdw_width,
             cfg.short_range_A,
         )
+        energy_idx += 1
 
         minima_hbond = -(self.hbond_coeff**2)
         minima_metal_ligand = -(self.metal_ligand_coeff**2)
         minima_hydrophobic = -(self.hydrophobic_coeff**2)
-        energies_pairs[1] = physics.linear_potential(
+        energies_pairs[energy_idx] = physics.linear_potential(
             D, R, minima_hbond, *cfg.hydrogen_bond_cutoffs
         )
-        energies_pairs[2] = physics.linear_potential(
+        energy_idx += 1
+        energies_pairs[energy_idx] = physics.linear_potential(
             D, R, minima_metal_ligand, *cfg.metal_ligand_cutoffs
         )
-        energies_pairs[3] = physics.linear_potential(
+        energy_idx += 1
+        energies_pairs[energy_idx] = physics.linear_potential(
             D, R, minima_hydrophobic, *cfg.hydrophobic_cutoffs
         )
+        energy_idx += 1
+
+        # Include the ionic interaction if required.
+        if cfg.get("include_ionic", False):
+            # Note the sign of `minima_ionic`
+            minima_ionic = self.ionic_coeff**2 * (
+                sample.partial_charges[edge_index_i[0]]
+                * sample.partial_charges[edge_index_i[1]]
+            )
+            energies_pairs[energy_idx] = physics.linear_potential(
+                D, R, minima_ionic, *cfg.ionic_cutoffs
+            )
+            energy_idx += 1
+
+        # Include Generalized Born pairwise energy if required
+        gb_energy_per_graph = torch.zeros(sample.batch.max() + 1, device=self.device)
+        if cfg.get("include_gb", False):
+            gb_pairwise_energy = physics.generalised_born_energy(
+                D,
+                born_radii,
+                sample.partial_charges,
+                edge_index_i,
+                cfg.gb_dielectric_in,
+                cfg.gb_dielectric_out,
+            )
+            energies_pairs[energy_idx] = self.gb_coeff**2 * gb_pairwise_energy
+            # GB self-energy (per atom) -> sum per graph
+            gb_self_energy = physics.self_born_energy(
+                born_radii,
+                sample.partial_charges,
+                cfg.gb_dielectric_in,
+                cfg.gb_dielectric_out,
+            )
+            gb_self_energy = self.gb_coeff**2 * gb_self_energy
+            gb_energy_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
 
         # Interaction masks according to atom types: (energy_types, pairs)
         masks = physics.interaction_masks(
@@ -157,20 +202,11 @@ class PIGNetMorse(PIGNet):
             sample.is_h_acceptor,
             sample.is_hydrophobic,
             edge_index_i,
-            True,
+            include_ionic=cfg.get("include_ionic", False),
         )
-
-        # ionic interaction
-        energies_pairs[4] = torch.zeros_like(energies_pairs[4])
-        if cfg.get("include_ionic", False):
-            # Note the sign of `minima_ionic`
-            minima_ionic = self.ionic_coeff**2 * (
-                sample.partial_charges[edge_index_i[0]]
-                * sample.partial_charges[edge_index_i[1]]
-            )
-            energies_pairs[4] = physics.linear_potential(
-                D, R, minima_ionic, *cfg.ionic_cutoffs
-            )
+        if cfg.get("include_gb", False):
+            gb_mask = torch.ones(D.numel(), dtype=torch.bool, device=self.device)
+            masks = torch.cat([masks, gb_mask.unsqueeze(0)])
 
         energies_pairs = energies_pairs * masks
         # Per-graph sum -> (energy_types, batch)
@@ -178,10 +214,17 @@ class PIGNetMorse(PIGNet):
         # Reshape -> (batch, energy_types)
         energies = energies.t().contiguous()
 
+        # Add GB self-energy per graph as separate column
+        if cfg.get("include_gb", False):
+            energies = torch.cat([energies, gb_energy_per_graph.unsqueeze(1)], dim=1)
+
         # Rotor penalty
         if cfg.rotor_penalty:
             penalty = 1 + self.rotor_coeff**2 * sample.rotor
             # -> (batch, 1)
             energies = energies / penalty
+
+        # Expose last per-atom Born radii for inspection after inference
+        self.last_born_radii = born_radii
 
         return energies, dvdw_radii
