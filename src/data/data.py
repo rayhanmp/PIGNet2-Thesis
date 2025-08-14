@@ -1,9 +1,11 @@
 import os
+import math
 import pickle
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolDescriptors, rdmolops
 from torch_geometric.data import Data, Dataset
 from torch_geometric.utils import dense_to_sparse
@@ -65,6 +67,48 @@ def get_vdw_radius(atom: Chem.Atom) -> float:
 
 def get_atom_charges(mol: Chem.Mol) -> List[float]:
     charges = [atom.GetFormalCharge() for atom in mol.GetAtoms()]
+    return charges
+
+
+def get_partial_charges(mol: Chem.Mol) -> List[float]:
+    """Return per-atom partial charges with fallbacks.
+
+    Priority:
+    1) RDKit atom double prop "PartialCharge" (from PQR assignment step)
+    2) RDKit Gasteiger charges (compute if missing): "_GasteigerCharge"
+    3) Formal charges
+    """
+    atoms = list(mol.GetAtoms())
+    has_rdkit_partial = any(atom.HasProp("PartialCharge") for atom in atoms)
+
+    if has_rdkit_partial:
+        charges: List[float] = []
+        for atom in atoms:
+            if atom.HasProp("PartialCharge"):
+                charges.append(atom.GetDoubleProp("PartialCharge"))
+            else:
+                # Fallback per-atom if one is missing
+                charges.append(float(atom.GetFormalCharge()))
+        return charges
+
+    # Otherwise try Gasteiger
+    try:
+        AllChem.ComputeGasteigerCharges(mol)
+    except Exception:
+        pass
+
+    charges: List[float] = []
+    for atom in atoms:
+        if atom.HasProp("_GasteigerCharge"):
+            try:
+                val = float(atom.GetProp("_GasteigerCharge"))
+                if not math.isfinite(val):
+                    val = 0.0
+            except Exception:
+                val = 0.0
+            charges.append(val)
+        else:
+            charges.append(float(atom.GetFormalCharge()))
     return charges
 
 
@@ -182,12 +226,10 @@ def mol_to_data(
 
     # Pre-compute all atom properties in parallel
     vdw_radii = torch.tensor([get_vdw_radius(atom) for atom in atoms], dtype=torch.float)
-    
-    # Use random dummy partial charges instead of formal charges for now
-    # atom_charges = torch.tensor([atom.GetFormalCharge() for atom in atoms], dtype=torch.float)
-    atom_charges = torch.normal(0.0, 0.2, size=(num_atoms,))  # Random charges ~ N(0, 0.2)
-    atom_charges = atom_charges.clamp(-0.8, 0.8)  # Keep them reasonable
-    
+
+    # Partial charges from RDKit props/PQR (fallback: Gasteiger -> formal)
+    partial_charges = torch.tensor(get_partial_charges(mol), dtype=torch.float)
+
     metals = torch.tensor([atom.GetSymbol() in chem.METALS for atom in atoms], dtype=torch.bool)
 
     # SMARTS patterns - compute once and reuse
@@ -213,12 +255,11 @@ def mol_to_data(
 
     # Assign all properties at once
     data.vdw_radii = vdw_radii
-    data.atom_charges = atom_charges
     data.is_metal = metals
     data.is_h_donor = h_donors
     data.is_h_acceptor = h_acceptors
     data.is_hydrophobic = hydrophobes
-    data.partial_charges = atom_charges
+    data.partial_charges = partial_charges
 
     return data
 

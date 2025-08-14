@@ -221,8 +221,8 @@ class PIGNet(Module):
         if cfg.get("include_ionic", False):
             # Note the sign of `minima_ionic`
             minima_ionic = self.ionic_coeff**2 * (
-                sample.atom_charges[edge_index_i[0]]
-                * sample.atom_charges[edge_index_i[1]]
+                sample.partial_charges[edge_index_i[0]]
+                * sample.partial_charges[edge_index_i[1]]
             )
             energies_pairs[energy_idx] = physics.linear_potential(
                 D, R, minima_ionic, *cfg.ionic_cutoffs
@@ -233,15 +233,15 @@ class PIGNet(Module):
         gb_energy_per_graph = torch.zeros(sample.batch.max() + 1, device=self.device)
         if cfg.get("include_gb", False):
             # GB pairwise interaction energy
-            gb_pairwise_energy = physics.generalized_born_energy(
-                D, born_radii, sample.atom_charges, edge_index_i,
+            gb_pairwise_energy = physics.generalised_born_energy(
+                D, born_radii, sample.partial_charges, edge_index_i,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             energies_pairs[energy_idx] = self.gb_coeff**2 * gb_pairwise_energy
             
             # GB self-energy (per atom, then summed per graph)
-            gb_self_energy = physics.self_energy_born(
-                born_radii, sample.atom_charges,
+            gb_self_energy = physics.self_born_energy(
+                born_radii, sample.partial_charges,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             gb_self_energy = self.gb_coeff**2 * gb_self_energy
