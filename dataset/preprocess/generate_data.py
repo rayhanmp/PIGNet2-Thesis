@@ -500,7 +500,7 @@ def main(args: argparse.Namespace):
                 pickle.dump((mol_ligand, mol_target), f)
     else:
         if len(ligand_mols) == 0:
-            print(f"[ERROR] Failed to load ligand from {args.ligand_file}, file=sys.stderr)
+            print(f"[ERROR] Failed to load ligand from {args.ligand_file}, file=sys.stderr))
             exit(1)
         mol_ligand = ligand_mols[0]
         if not args.no_prot_sdf:
