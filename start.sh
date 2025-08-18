@@ -1,7 +1,9 @@
 echo "[SETUP] Installing Python requirements"; \
 conda run -n pignet2 pip install --no-cache-dir -r requirements.txt && echo "[SETUP] Requirements installed"; \
 echo "[SETUP] Downloading raw PDBbind refined set"; \
-bash dataset/preprocess/download_raw.sh && echo "[SETUP] Raw download completed"; \
+pushd dataset/preprocess >/dev/null; \
+bash download_raw.sh; status=$?; popd >/dev/null; \
+if [ $status -ne 0 ]; then echo "[ERROR] Raw download failed"; exit 1; fi; echo "[SETUP] Raw download completed"; \
 echo "[SETUP] Generating complexes from raw (with PQR charges)"; \
 pushd dataset/preprocess >/dev/null; \
 conda run -n pignet2 python script_pdbbind.py; status=$?; popd >/dev/null; \

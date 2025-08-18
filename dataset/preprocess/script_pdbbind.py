@@ -14,7 +14,9 @@ with list_file.open("r") as f:
 for pdb_id in pdb_ids:
     folder = root_dir / pdb_id
     protein_file = folder / f"{pdb_id}_protein.pdb"
-    ligand_file = folder / f"{pdb_id}_ligand.sdf"
+    ligand_sdf = folder / f"{pdb_id}_ligand.sdf"
+    ligand_mol2 = folder / f"{pdb_id}_ligand.mol2"
+    ligand_file = ligand_sdf if ligand_sdf.exists() else ligand_mol2
     pqr_file = folder / f"{pdb_id}.pqr"
 
     if protein_file.exists() and ligand_file.exists() and pqr_file.exists():

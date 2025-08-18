@@ -421,6 +421,25 @@ def mols_from_smi_file(
     return mols
 
 
+def _load_ligand_with_fallback(ligand_path: Path) -> Tuple[List[Chem.Mol], Path]:
+    """Load ligand molecules, falling back to .mol2 if .sdf yields no valid mols.
+
+    Returns a tuple of (valid_molecules, actual_path_used).
+    """
+    def _filter_valid(mols_iter: Iterable[Optional[Chem.Mol]]) -> List[Chem.Mol]:
+        return [m for m in mols_iter if m is not None]
+
+    mols = _filter_valid(read_mols(ligand_path))
+    if len(mols) == 0 and ligand_path.suffix.lower() == ".sdf":
+        alt = ligand_path.with_suffix(".mol2")
+        if alt.exists():
+            if not False:
+                print(f"[INFO] SDF failed for {ligand_path.name}; trying MOL2 {alt.name}", file=sys.stderr)
+            mols = _filter_valid(read_mols(alt))
+            return mols, alt
+    return mols, ligand_path
+
+
 def extract_binding_pocket(
     ligand_mol: Chem.Mol,
     pdb_path: PathLike,
@@ -452,8 +471,9 @@ def main(args: argparse.Namespace):
     else:
         pdb_file = protonate_pdb(args.pdb_file)
 
-    if len(list(read_mols(args.ligand_file))) > 1:
-        for mol_idx, mol_ligand in enumerate(read_mols(args.ligand_file)):
+    ligand_mols, used_ligand_path = _load_ligand_with_fallback(args.ligand_file)
+    if len(ligand_mols) > 1:
+        for mol_idx, mol_ligand in enumerate(ligand_mols):
             # mol_ligand = read_mols(args.ligand_file)[0]
             if not args.no_prot_sdf:
                 mol_ligand = protonate_ligand(mol_ligand)
@@ -479,7 +499,10 @@ def main(args: argparse.Namespace):
             ) as f:
                 pickle.dump((mol_ligand, mol_target), f)
     else:
-        mol_ligand = read_mols(args.ligand_file)[0]
+        if len(ligand_mols) == 0:
+            print(f"[ERROR] Failed to load ligand from {args.ligand_file}, file=sys.stderr)
+            exit(1)
+        mol_ligand = ligand_mols[0]
         if not args.no_prot_sdf:
             mol_ligand = protonate_ligand(mol_ligand)
             if not mol_ligand:
