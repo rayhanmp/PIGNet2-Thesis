@@ -1,6 +1,6 @@
 #!/bin/bash
 
-URL="https://thesis.rayhan.id/thesis/PDBbind_v2020_refined.tar.gz"
+URL="https://thesis.rayhan.id/PDBbind_v2020_refined.tar.gz"
 FILE="PDBbind_v2020_refined.tar.gz"
 OUTPUT_DIR="PDBbind_v2020_refined"
 
