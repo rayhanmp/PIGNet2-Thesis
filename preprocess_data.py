@@ -14,10 +14,10 @@ print(f"Found {len(test_keys)} test samples")
 # Create output directories
 os.makedirs("processed_features", exist_ok=True)
 
-# Preprocess training data
+# Preprocess training data from generated complexes
 train_dataset = ComplexDataset(
     keys=train_keys,
-    data_dir="dataset/PDBbind-v2020/scoring/data",
+    data_dir="dataset/preprocess/data",
     processed_data_dir="processed_features/",
     conv_range=(0.0, 8.0),  # From model config
     id_to_y=id_to_y,
@@ -29,7 +29,7 @@ train_dataset.process()
 # Preprocess test data too
 test_dataset = ComplexDataset(
     keys=test_keys,
-    data_dir="dataset/PDBbind-v2020/scoring/data",
+    data_dir="dataset/preprocess/data",
     processed_data_dir="processed_features/",
     conv_range=(0.0, 8.0),
     id_to_y=id_to_y,
