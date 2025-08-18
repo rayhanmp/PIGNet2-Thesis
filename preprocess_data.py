@@ -5,7 +5,10 @@ from src.data.utils import read_keys, read_labels
 # Read training keys from the same source as training
 key_dir = "src/keys/train/PDBbind_v2020/scoring"
 train_keys, test_keys = read_keys(key_dir)
+# Prefer prepackaged labels, fall back to raw score file if missing
 label_file = "dataset/PDBbind-v2020/scoring/pdb_to_affinity.txt"
+if not os.path.exists(label_file):
+    label_file = "dataset/generate_PDA/score-pdbbind.txt"
 id_to_y = read_labels(label_file)
 
 print(f"Found {len(train_keys)} training samples")
