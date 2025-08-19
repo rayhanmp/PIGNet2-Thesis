@@ -5,11 +5,14 @@ import os
 import pickle
 import sys
 import tempfile
+import subprocess
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from protonate import protonate_ligand, protonate_pdb
 from pymol import cmd
+from pymol import chempy
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -19,6 +22,120 @@ Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 PathLike = Union[str, os.PathLike]
 
 MAX_NUM_RETRIALS = 20
+
+
+def _mol_to_xyz_block(mol: Chem.Mol) -> str:
+    """Return an XYZ block string for the first conformer of `mol`.
+
+    If no conformer exists, attempt to embed one. Raises RuntimeError on failure.
+    """
+    if mol.GetNumConformers() == 0:
+        mol_h = Chem.AddHs(mol)
+        try:
+            params = AllChem.ETKDGv3()
+            params.randomSeed = 0xC0FFEE
+            if AllChem.EmbedMolecule(mol_h, params=params) != 0:
+                raise RuntimeError("RDKit failed to embed molecule for xTB")
+            AllChem.UFFOptimizeMolecule(mol_h, maxIters=200)
+            mol = Chem.RemoveHs(mol_h)
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate 3D conformer: {e}")
+
+    conf = mol.GetConformer()
+    natoms = mol.GetNumAtoms()
+    lines = [str(natoms)]
+    for atom_idx in range(natoms):
+        atom = mol.GetAtomWithIdx(atom_idx)
+        pos = conf.GetAtomPosition(atom_idx)
+        lines.append(f"{atom.GetSymbol()} {pos.x:.8f} {pos.y:.8f} {pos.z:.8f}")
+    return "\n".join(lines) + "\n"
+
+
+def _assign_xtb_partial_charges(
+    mol: Chem.Mol,
+    xtb_path: Optional[Union[str, Path]] = None,
+    total_charge: Optional[int] = None,
+    uhf: int = 0,
+    gfn: int = 2,
+    tight: bool = False,
+) -> bool:
+    """Compute per-atom partial charges using xTB and set RDKit "PartialCharge".
+
+    Returns True on success, False on failure (leaves molecule unchanged).
+    """
+    exe = str(xtb_path) if xtb_path is not None else shutil.which("xtb")
+    if not exe:
+        print("[WARN] xTB executable not found in PATH; skipping xTB charges", file=sys.stderr)
+        return False
+
+    # Determine total charge if not provided
+    if total_charge is None:
+        try:
+            total_charge = int(sum(atom.GetFormalCharge() for atom in mol.GetAtoms()))
+        except Exception:
+            total_charge = 0
+
+    # Prepare temp working directory for xTB run
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        xyz_path = tmpdir_path / "ligand.xyz"
+        with xyz_path.open("w") as fh:
+            fh.write(_mol_to_xyz_block(mol))
+
+        xtb_cmd = [exe, str(xyz_path), "--gfn", str(gfn), "--sp", "--chrg", str(total_charge)]
+        if uhf and uhf > 0:
+            xtb_cmd.extend(["--uhf", str(uhf)])
+        if tight:
+            # Increase accuracy for single-point calculations
+            xtb_cmd.extend(["--acc", "0.1"])  # smaller is tighter
+
+        try:
+            # Run in tmpdir to capture generated files (e.g., charges)
+            proc = subprocess.run(xtb_cmd, cwd=str(tmpdir_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True)
+        except Exception as e:
+            print(f"[WARN] Failed to run xTB: {e}", file=sys.stderr)
+            return False
+
+        # xTB writes per-atom charges to a file named 'charges'
+        charges_file = tmpdir_path / "charges"
+        if not charges_file.exists():
+            # Some versions write 'charges' only for certain flags; try parsing stdout as fallback
+            # But if file is not present, consider it a failure and do not modify mol
+            # Emit tail of stdout/stderr for debugging
+            tail_out = "\n".join(proc.stdout.strip().splitlines()[-10:]) if proc.stdout else ""
+            tail_err = "\n".join(proc.stderr.strip().splitlines()[-10:]) if proc.stderr else ""
+            print("[WARN] xTB did not produce 'charges' file; skipping xTB charges", file=sys.stderr)
+            if tail_out:
+                print("[xTB stdout tail]", file=sys.stderr)
+                print(tail_out, file=sys.stderr)
+            if tail_err:
+                print("[xTB stderr tail]", file=sys.stderr)
+                print(tail_err, file=sys.stderr)
+            return False
+
+        try:
+            values: List[float] = []
+            with charges_file.open() as fh:
+                for line in fh:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    values.append(float(s.split()[0]))
+        except Exception as e:
+            print(f"[WARN] Failed to parse xTB charges file: {e}", file=sys.stderr)
+            return False
+
+        if len(values) != mol.GetNumAtoms():
+            print(
+                f"[WARN] xTB charges count ({len(values)}) does not match number of atoms ({mol.GetNumAtoms()}); skipping",
+                file=sys.stderr,
+            )
+            return False
+
+        for idx, q in enumerate(values):
+            mol.GetAtomWithIdx(idx).SetDoubleProp("PartialCharge", float(q))
+
+        return True
 
 def extract(
     receptor_pdb: Path,
@@ -480,6 +597,18 @@ def main(args: argparse.Namespace):
                 if not mol_ligand:
                     print("protonate_ligand failed:", f"{args.ligand_file.stem}_{mol_idx}", file=sys.stderr)
                     exit()
+            # Assign xTB partial charges to ligand (best-effort)
+            try:
+                _assign_xtb_partial_charges(
+                    mol_ligand,
+                    xtb_path=getattr(args, "xtb_path", None),
+                    total_charge=getattr(args, "xtb_charge", None),
+                    uhf=getattr(args, "xtb_uhf", 0),
+                    gfn=getattr(args, "xtb_gfn", 2),
+                    tight=getattr(args, "xtb_tight", False),
+                )
+            except Exception as e:
+                print(f"[WARN] xTB charge assignment failed for ligand idx {mol_idx}: {e}", file=sys.stderr)
 
             mol_target = extract_binding_pocket(
                 mol_ligand,
@@ -500,7 +629,7 @@ def main(args: argparse.Namespace):
                 pickle.dump((mol_ligand, mol_target), f)
     else:
         if len(ligand_mols) == 0:
-            print(f"[ERROR] Failed to load ligand from {args.ligand_file}, file=sys.stderr))
+            print(f"[ERROR] Failed to load ligand from {args.ligand_file}", file=sys.stderr)
             exit(1)
         mol_ligand = ligand_mols[0]
         if not args.no_prot_sdf:
@@ -508,6 +637,18 @@ def main(args: argparse.Namespace):
             if not mol_ligand:
                 print("protonate_ligand failed:", args.ligand_file.stem, file=sys.stderr)
                 exit()
+        # Assign xTB partial charges to ligand (best-effort)
+        try:
+            _assign_xtb_partial_charges(
+                mol_ligand,
+                xtb_path=getattr(args, "xtb_path", None),
+                total_charge=getattr(args, "xtb_charge", None),
+                uhf=getattr(args, "xtb_uhf", 0),
+                gfn=getattr(args, "xtb_gfn", 2),
+                tight=getattr(args, "xtb_tight", False),
+            )
+        except Exception as e:
+            print(f"[WARN] xTB charge assignment failed for ligand: {e}", file=sys.stderr)
 
         mol_target = extract_binding_pocket(
             mol_ligand,
@@ -572,6 +713,37 @@ if __name__ == "__main__":
         type=float,
         help="distance tolerance (Å) for PQR coordinate matching",
         default=0.001,
+    )
+
+    parser.add_argument(
+        "--xtb_path",
+        type=Path,
+        default=None,
+        help="Path to xTB executable (defaults to searching PATH)",
+    )
+    parser.add_argument(
+        "--xtb_charge",
+        type=int,
+        default=None,
+        help="Total charge for ligand passed to xTB (defaults to sum of formal charges)",
+    )
+    parser.add_argument(
+        "--xtb_uhf",
+        type=int,
+        default=0,
+        help="Number of unpaired electrons (UHF) for xTB run (default 0)",
+    )
+    parser.add_argument(
+        "--xtb_gfn",
+        type=int,
+        default=0,
+        choices=[0, 1, 2],
+        help="GFN level for xTB (0, 1, or 2; default 2)",
+    )
+    parser.add_argument(
+        "--xtb_tight",
+        action="store_true",
+        help="Use tight optimization settings (may be slower)",
     )
     args = parser.parse_args()
 
