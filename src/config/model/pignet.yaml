@@ -19,6 +19,7 @@ ionic_cutoffs: [-101.0, -100.0]
 
 # Generalized Born parameters
 include_gb: true
-gb_radii_scale: [1.0, 3.0]  # Born radii range in Angstroms
-gb_dielectric_in: 1.0       # Interior dielectric constant
+gb_mode: delta_full  # complex | delta_full
+gb_radii_scale: [1.5, 5.0]  # Born radii range in Angstroms
+gb_dielectric_in: 3.0       # Interior dielectric constant
 gb_dielectric_out: 78.5     # Solvent dielectric constant (water)
