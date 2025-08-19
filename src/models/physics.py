@@ -241,7 +241,7 @@ def generalised_born_energy(
 
     # Calculate the GB energy
     # E_GB = -0.5 * (1/eps_in - 1/eps_out) * sum_ij (q_i * q_j / f_GB)
-    prefactor = -0.5 * one_over_4pi_eps0 * (1.0/dielectric_in - 1.0/dielectric_out)
+    prefactor = -1 * one_over_4pi_eps0 * (1.0/dielectric_in - 1.0/dielectric_out)
     energyPair = prefactor * (qi * qj) / f_GB
 
     return energyPair
