@@ -71,10 +71,10 @@ class PIGNetMorse(PIGNet):
         cfg = self.config.model
 
         # Initial embedding
-        x = self.embed(sample.x)
+        x0 = self.embed(sample.x)
 
-        # Graph convolutions
-        x = self.conv(x, sample.edge_index, sample.edge_index_c)
+        # Graph convolutions (full: intra + inter)
+        x = self.conv(x0, sample.edge_index, sample.edge_index_c)
 
         # Ligand-to-target uni-directional edges
         # to compute pairwise interactions: (2, pairs)
@@ -103,9 +103,10 @@ class PIGNetMorse(PIGNet):
         )
 
         # Predict born radii for each atom
-        born_radii = None
+        born_radii_full = None
+        born_radii_iso = None
         if cfg.get("include_gb", False):
-            # u in (0,1)
+            # Complex (full) radii from full conv representation
             u = self.nn_born_radii(x).squeeze(-1)
 
             dev = x.device
@@ -148,15 +149,50 @@ class PIGNetMorse(PIGNet):
                 span = torch.clamp(span, min=1e-6)
 
                 # Final radii, differentiable inside the interval
-                born_radii = u * span + per_atom_min
+                born_radii_full = u * span + per_atom_min
 
                 # Numerical safety upper clamp to global_max
-                born_radii = torch.minimum(born_radii, global_max)
+                born_radii_full = torch.minimum(born_radii_full, global_max)
 
             except AttributeError:
                 # No atomic numbers available - fall back to global scaling
                 span = cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]
-                born_radii = u * span + cfg.gb_radii_scale[0]
+                born_radii_full = u * span + cfg.gb_radii_scale[0]
+
+            # Isolated radii from intraconv-only representation (faithful delta mode)
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                x_iso = self.intraconv_only(x0, sample.edge_index)
+                u_iso = self.nn_born_radii(x_iso).squeeze(-1)
+                try:
+                    Z = sample.atomic_numbers
+                    global_min = torch.as_tensor(cfg.gb_radii_scale[0], device=x_iso.device, dtype=u_iso.dtype)
+                    global_max = torch.as_tensor(cfg.gb_radii_scale[1], device=x_iso.device, dtype=u_iso.dtype)
+                    per_atom_min = torch.full_like(u_iso, global_min)
+                    element_minima = {
+                        1: 1.20,
+                        6: 1.70,
+                        7: 1.55,
+                        8: 1.50,
+                        9: 1.50,
+                        14: 2.10,
+                        15: 1.85,
+                        16: 1.80,
+                        17: 1.70,
+                    }
+                    for z_val, min_val in element_minima.items():
+                        mask = (Z == z_val)
+                        if mask.any():
+                            per_atom_min = torch.where(
+                                mask,
+                                torch.as_tensor(min_val, device=x_iso.device, dtype=u_iso.dtype),
+                                per_atom_min,
+                            )
+                    span = torch.clamp(global_max - per_atom_min, min=1e-6)
+                    born_radii_iso = u_iso * span + per_atom_min
+                    born_radii_iso = torch.minimum(born_radii_iso, global_max)
+                except AttributeError:
+                    span = cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]
+                    born_radii_iso = u_iso * span + cfg.gb_radii_scale[0]
 
         # Prepare a pair-energies container: (energy_types, pairs)
         # Only inter-molecular terms are included here.
@@ -221,6 +257,8 @@ class PIGNetMorse(PIGNet):
         # Include Generalized Born terms (pairwise: intra+inter; self)
         gb_pairwise_per_graph = None
         gb_self_per_graph = None
+        gb_pairwise_delta = None
+        gb_self_delta = None
         if cfg.get("include_gb", False):
             # All unique pairs within each graph
             edge_index_all = physics.all_pairs_edges(sample.batch)
@@ -231,7 +269,7 @@ class PIGNetMorse(PIGNet):
 
             gb_pairwise_all = physics.generalised_born_energy(
                 D_all,
-                born_radii,
+                born_radii_full,
                 sample.partial_charges,
                 edge_index_all,
                 cfg.gb_dielectric_in,
@@ -240,12 +278,57 @@ class PIGNetMorse(PIGNet):
             gb_pairwise_per_graph = scatter(gb_pairwise_all, sample.batch[edge_index_all[0]])
 
             gb_self_energy = physics.self_born_energy(
-                born_radii,
+                born_radii_full,
                 sample.partial_charges,
                 cfg.gb_dielectric_in,
                 cfg.gb_dielectric_out,
             )
             gb_self_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
+
+            # Faithful delta mode: subtract isolated ligand and protein contributions computed with intraconv-only radii
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                ligand_mask = sample.is_ligand
+                protein_mask = ~ligand_mask
+
+                lig_pairs_mask = ligand_mask[edge_index_all[0]] & ligand_mask[edge_index_all[1]]
+                edge_index_lig = edge_index_all[:, lig_pairs_mask]
+                if edge_index_lig.numel() > 0:
+                    D_lig = physics.distances(sample.pos, edge_index_lig)
+                    _mask_lig = (cfg.interaction_range[0] <= D_lig) & (D_lig <= cfg.interaction_range[1])
+                    edge_index_lig = edge_index_lig[:, _mask_lig]
+                    D_lig = D_lig[_mask_lig]
+                    gb_pair_lig = physics.generalised_born_energy(
+                        D_lig, born_radii_iso, sample.partial_charges, edge_index_lig,
+                        cfg.gb_dielectric_in, cfg.gb_dielectric_out,
+                    )
+                    gb_pair_lig_sum = scatter(gb_pair_lig, sample.batch[edge_index_lig[0]])
+                else:
+                    gb_pair_lig_sum = torch.zeros_like(gb_pairwise_per_graph)
+
+                pro_pairs_mask = protein_mask[edge_index_all[0]] & protein_mask[edge_index_all[1]]
+                edge_index_pro = edge_index_all[:, pro_pairs_mask]
+                if edge_index_pro.numel() > 0:
+                    D_pro = physics.distances(sample.pos, edge_index_pro)
+                    _mask_pro = (cfg.interaction_range[0] <= D_pro) & (D_pro <= cfg.interaction_range[1])
+                    edge_index_pro = edge_index_pro[:, _mask_pro]
+                    D_pro = D_pro[_mask_pro]
+                    gb_pair_pro = physics.generalised_born_energy(
+                        D_pro, born_radii_iso, sample.partial_charges, edge_index_pro,
+                        cfg.gb_dielectric_in, cfg.gb_dielectric_out,
+                    )
+                    gb_pair_pro_sum = scatter(gb_pair_pro, sample.batch[edge_index_pro[0]])
+                else:
+                    gb_pair_pro_sum = torch.zeros_like(gb_pairwise_per_graph)
+
+                gb_self_iso = physics.self_born_energy(
+                    born_radii_iso, sample.partial_charges,
+                    cfg.gb_dielectric_in, cfg.gb_dielectric_out,
+                )
+                gb_self_lig_sum = scatter(gb_self_iso[ligand_mask], sample.batch[ligand_mask], dim=0)
+                gb_self_pro_sum = scatter(gb_self_iso[protein_mask], sample.batch[protein_mask], dim=0)
+
+                gb_pairwise_delta = gb_pairwise_per_graph - gb_pair_lig_sum - gb_pair_pro_sum
+                gb_self_delta = gb_self_per_graph - gb_self_lig_sum - gb_self_pro_sum
 
         # Interaction masks according to atom types: (energy_types, pairs)
         masks = physics.interaction_masks(
@@ -265,11 +348,18 @@ class PIGNetMorse(PIGNet):
 
         # Append GB pairwise and self energies per graph as separate columns
         if cfg.get("include_gb", False):
-            energies = torch.cat([
-                energies,
-                gb_pairwise_per_graph.unsqueeze(1),
-                gb_self_per_graph.unsqueeze(1),
-            ], dim=1)
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                energies = torch.cat([
+                    energies,
+                    gb_pairwise_delta.unsqueeze(1),
+                    gb_self_delta.unsqueeze(1),
+                ], dim=1)
+            else:
+                energies = torch.cat([
+                    energies,
+                    gb_pairwise_per_graph.unsqueeze(1),
+                    gb_self_per_graph.unsqueeze(1),
+                ], dim=1)
 
         # Rotor penalty
         if cfg.rotor_penalty:
@@ -278,6 +368,6 @@ class PIGNetMorse(PIGNet):
             energies = energies / penalty
 
         # Expose last per-atom Born radii for inspection after inference
-        self.last_born_radii = born_radii
+        self.last_born_radii = born_radii_full
 
         return energies, dvdw_radii

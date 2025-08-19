@@ -53,8 +53,13 @@ def _energy_component_names(config):
         names.append("ionic")
     if getattr(config.model, "include_gb", False):
         # Pairwise GB and GB self-energy are appended in the model forward
-        names.append("gb_pairwise")
-        names.append("gb_self")
+        gb_mode = getattr(config.model, "gb_mode", "complex")
+        if gb_mode == "delta_full":
+            names.append("gb_pairwise_delta")
+            names.append("gb_self_delta")
+        else:
+            names.append("gb_pairwise")
+            names.append("gb_self")
     return names
 
 
@@ -372,14 +377,6 @@ def main(config: DictConfig):
             interrupted = True
             logger.error(f"Training terminated due to an exception: {e}")
         finally:
-            # Ensure any active profiler context is gracefully closed
-            try:
-                if profiler_context is not None:
-                    profiler_context.__exit__(None, None, None)
-            except Exception:
-                pass
-
-            # Always attempt to log final artifacts to MLflow (even if interrupted)
             try:
                 if best_ckpt_path and os.path.exists(best_ckpt_path):
                     try:

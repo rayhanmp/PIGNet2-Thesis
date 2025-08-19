@@ -132,21 +132,33 @@ class PIGNet(Module):
             x = conv(x, edge_index_2)
         return x
 
+    def intraconv_only(self, x, edge_index_1):
+        """Apply only intra-molecular convolutions (no inter-molecular pass)."""
+        for conv in self.intraconv:
+            x = conv(x, edge_index_1)
+        return x
+
     def forward(self, sample: Batch):
         cfg = self.config.model
 
         # Initial embedding
-        x = self.embed(sample.x)
+        x0 = self.embed(sample.x)
 
-        # Graph convolutions
-        x = self.conv(x, sample.edge_index, sample.edge_index_c)
+        # Graph convolutions (full: intra + inter)
+        x = self.conv(x0, sample.edge_index, sample.edge_index_c)
 
         # Predict Born radii for each atom (per-atom prediction)
-        born_radii = None
+        born_radii_full = None
+        born_radii_iso = None
         if cfg.get("include_gb", False):
-            born_radii = self.nn_born_radii(x).view(-1)
-            # Scale Born radii to reasonable range (e.g., 1.0 to 3.0 Angstroms)
-            born_radii = born_radii * (cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]) + cfg.gb_radii_scale[0]
+            # Complex (full) radii from full conv representation
+            born_radii_full = self.nn_born_radii(x).view(-1)
+            born_radii_full = born_radii_full * (cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]) + cfg.gb_radii_scale[0]
+            # Isolated radii from intraconv-only representation (faithful delta mode)
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                x_iso = self.intraconv_only(x0, sample.edge_index)
+                born_radii_iso = self.nn_born_radii(x_iso).view(-1)
+                born_radii_iso = born_radii_iso * (cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]) + cfg.gb_radii_scale[0]
 
         # Ligand-to-target uni-directional edges
         # to compute pairwise interactions: (2, pairs)
@@ -227,6 +239,8 @@ class PIGNet(Module):
         # Include Generalized Born terms (pairwise: intra+inter; self)
         gb_pairwise_per_graph = None
         gb_self_per_graph = None
+        gb_pairwise_delta = None
+        gb_self_delta = None
         if cfg.get("include_gb", False):
             # All unique pairs within each graph (intra-ligand, intra-protein, and inter)
             edge_index_all = physics.all_pairs_edges(sample.batch)
@@ -236,7 +250,7 @@ class PIGNet(Module):
             D_all = D_all[_mask_all]
 
             gb_pairwise_all = physics.generalised_born_energy(
-                D_all, born_radii, sample.partial_charges, edge_index_all,
+                D_all, born_radii_full, sample.partial_charges, edge_index_all,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             # Sum pairwise GB per graph
@@ -244,10 +258,58 @@ class PIGNet(Module):
 
             # GB self-energy (per atom) -> per-graph sum
             gb_self_energy = physics.self_born_energy(
-                born_radii, sample.partial_charges,
+                born_radii_full, sample.partial_charges,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             gb_self_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
+
+            # Faithful delta mode: subtract isolated ligand and protein contributions computed with intraconv-only radii
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                ligand_mask = sample.is_ligand
+                protein_mask = ~ligand_mask
+
+                # Ligand-only pairs
+                lig_pairs_mask = ligand_mask[edge_index_all[0]] & ligand_mask[edge_index_all[1]]
+                edge_index_lig = edge_index_all[:, lig_pairs_mask]
+                if edge_index_lig.numel() > 0:
+                    D_lig = physics.distances(sample.pos, edge_index_lig)
+                    _mask_lig = (cfg.interaction_range[0] <= D_lig) & (D_lig <= cfg.interaction_range[1])
+                    edge_index_lig = edge_index_lig[:, _mask_lig]
+                    D_lig = D_lig[_mask_lig]
+                    gb_pair_lig = physics.generalised_born_energy(
+                        D_lig, born_radii_iso, sample.partial_charges, edge_index_lig,
+                        cfg.gb_dielectric_in, cfg.gb_dielectric_out
+                    )
+                    gb_pair_lig_sum = scatter(gb_pair_lig, sample.batch[edge_index_lig[0]])
+                else:
+                    gb_pair_lig_sum = torch.zeros_like(gb_pairwise_per_graph)
+
+                # Protein-only pairs
+                pro_pairs_mask = protein_mask[edge_index_all[0]] & protein_mask[edge_index_all[1]]
+                edge_index_pro = edge_index_all[:, pro_pairs_mask]
+                if edge_index_pro.numel() > 0:
+                    D_pro = physics.distances(sample.pos, edge_index_pro)
+                    _mask_pro = (cfg.interaction_range[0] <= D_pro) & (D_pro <= cfg.interaction_range[1])
+                    edge_index_pro = edge_index_pro[:, _mask_pro]
+                    D_pro = D_pro[_mask_pro]
+                    gb_pair_pro = physics.generalised_born_energy(
+                        D_pro, born_radii_iso, sample.partial_charges, edge_index_pro,
+                        cfg.gb_dielectric_in, cfg.gb_dielectric_out
+                    )
+                    gb_pair_pro_sum = scatter(gb_pair_pro, sample.batch[edge_index_pro[0]])
+                else:
+                    gb_pair_pro_sum = torch.zeros_like(gb_pairwise_per_graph)
+
+                # Self-energy isolated sums
+                gb_self_iso = physics.self_born_energy(
+                    born_radii_iso, sample.partial_charges,
+                    cfg.gb_dielectric_in, cfg.gb_dielectric_out
+                )
+                gb_self_lig_sum = scatter(gb_self_iso[ligand_mask], sample.batch[ligand_mask], dim=0)
+                gb_self_pro_sum = scatter(gb_self_iso[protein_mask], sample.batch[protein_mask], dim=0)
+
+                gb_pairwise_delta = gb_pairwise_per_graph - gb_pair_lig_sum - gb_pair_pro_sum
+                gb_self_delta = gb_self_per_graph - gb_self_lig_sum - gb_self_pro_sum
 
         # Interaction masks according to atom types: (energy_types, pairs)
         masks = physics.interaction_masks(
@@ -268,13 +330,20 @@ class PIGNet(Module):
         # Reshape -> (batch, energy_types)
         energies = energies.t().contiguous()
         
-        # Append GB pairwise and self energies per graph
+        # Append GB energies per graph
         if cfg.get("include_gb", False):
-            energies = torch.cat([
-                energies,
-                gb_pairwise_per_graph.unsqueeze(1),
-                gb_self_per_graph.unsqueeze(1),
-            ], dim=1)
+            if getattr(cfg, "gb_mode", "complex") == "delta_full":
+                energies = torch.cat([
+                    energies,
+                    gb_pairwise_delta.unsqueeze(1),
+                    gb_self_delta.unsqueeze(1),
+                ], dim=1)
+            else:
+                energies = torch.cat([
+                    energies,
+                    gb_pairwise_per_graph.unsqueeze(1),
+                    gb_self_per_graph.unsqueeze(1),
+                ], dim=1)
 
         # Rotor penalty
         if cfg.rotor_penalty:
@@ -282,7 +351,7 @@ class PIGNet(Module):
             # -> (batch, 1)
             energies = energies / penalty
 
-        return energies, dvdw_radii, born_radii
+        return energies, dvdw_radii
 
     def loss_dvdw(self, dvdw_radii: torch.Tensor):
         loss = dvdw_radii.pow(2).mean()
