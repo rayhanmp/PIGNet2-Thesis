@@ -224,158 +224,182 @@ def main(config: DictConfig):
         best_ckpt_path = None
         best_metric_task = None
 
-        for epoch in range(last_epoch + 1, config.run.num_epochs + 1):
-            start_time = time.time()
-            data.sample_keys()
+        interrupted = False
 
-            # Start profiler for specific epochs
-            should_profile = profiler_enabled and epoch in profiler_epochs
-            if should_profile:
-                profiler_context = profile(
-                    activities=profiler_activities,
-                    record_shapes=True,
-                    profile_memory=True,
-                    with_stack=True,
-                    on_trace_ready=lambda trace: trace.export_chrome_trace(
-                        os.path.join(profiler_output_dir, f"epoch_{epoch}_trace.json")
-                    )
-                )
-                profiler_context.__enter__()
-                logger.info(f"Starting profiler for epoch {epoch}")
-
-            model.reset_log()
-            run(model, data, device, optimizer, True, should_profile)
-            train_losses = utils.get_losses(model)
-
-            task_name = "scoring"
-            if task_name not in model.predictions:
-                task_name = list(model.predictions.keys())[0]
-            train_r, train_r2, train_tau = utils.get_stats(model, task_name)
-            utils.write_predictions(model, config, True)
-            # Log energy distribution for training predictions every 25 epochs
-            try:
-                if epoch % 25 == 0:
-                    log_energy_distribution_to_mlflow(model, config, stage="train", epoch=epoch)
-            except Exception as e:
-                print(f"Error logging train energy distribution: {e}")
-
-            model.reset_log()
-            run(model, data, device, optimizer, False, should_profile)
-            test_losses = utils.get_losses(model)
-            test_r, test_r2, test_tau = utils.get_stats(model, task_name)
-            utils.write_predictions(model, config, False)
-            # Do not log energy distribution for validation/test per user request
-
-            # Update best checkpoint based on test loss of the scoring task (fallback to first task)
-            metric_task = "scoring" if "scoring" in test_losses else None
-            if metric_task is None:
-                for k in test_losses.keys():
-                    if k != "dvdw":
-                        metric_task = k
-                        break
-            if metric_task is not None:
-                current_metric = test_losses[metric_task]
-                if current_metric < best_metric:
-                    best_metric = current_metric
-                    best_epoch = epoch
-                    best_metric_task = metric_task
-                    best_ckpt_path = os.path.join(config.run.checkpoint_dir, "save_best.pt")
-                    utils.save_state(best_ckpt_path, epoch, model, optimizer)
-                    try:
-                        mlflow.log_metric(f"best_test_loss_{metric_task}", best_metric, step=epoch)
-                        mlflow.log_metric("best_epoch_so_far", best_epoch, step=epoch)
-                    except Exception as e:
-                        print(f"Error logging best-so-far metrics to MLflow: {e}")
-
-            # Stop profiler and save results
-            if should_profile and profiler_context:
-                profiler_context.__exit__(None, None, None)
-                
-                # Export additional profiler outputs
-                try:
-                    # Save detailed profiler table
-                    profile_table = profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=20)
-                    with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_table.txt"), "w") as f:
-                        f.write(profile_table)
-                    
-                    # Save profiler statistics by input shapes
-                    profile_shapes = profiler_context.key_averages(group_by_input_shape=True).table(sort_by="cuda_time_total", row_limit=20)
-                    with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_shapes.txt"), "w") as f:
-                        f.write(profile_shapes)
-                        
-                    logger.info(f"Profiler data saved to {profiler_output_dir}/epoch_{epoch}_*")
-                    print(f"\nTop operations by CUDA time for epoch {epoch}:")
-                    print(profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-                    
-                except Exception as e:
-                    logger.error(f"Error saving profiler data: {e}")
-
-            end_time = time.time()
-
-            if epoch == last_epoch + 1:
-                logger.info(utils.get_log_line(data.tasks, title=True))
-
-            log_elements = [
-                str(epoch),
-                utils.get_log_line(data.tasks, train_losses),
-                utils.get_log_line(data.tasks, test_losses),
-                f"{train_r:.3f}",
-                f"{test_r:.3f}",
-                f"{train_tau:.3f}",
-                f"{test_tau:.3f}",
-                f"{end_time - start_time:.3f}",
-            ]
-            logger.info("\t".join(log_elements))
-
-            writer.add_scalars("training loss", train_losses, epoch)
-            writer.add_scalars("test loss", test_losses, epoch)
-            writer.add_scalar("R2/train", train_r2, epoch)
-            writer.add_scalar("R2/test", test_r2, epoch)
-            writer.add_scalar("R/train", train_r, epoch)
-            writer.add_scalar("R/test", test_r, epoch)
-            writer.add_scalar("tau/train", train_tau, epoch)
-            writer.add_scalar("tau/test", test_tau, epoch)
-
-            # Log to MLflow
-            try:
-                for k, v in train_losses.items():
-                    mlflow.log_metric(f"train_loss_{k}", v, step=epoch)
-                for k, v in test_losses.items():
-                    mlflow.log_metric(f"test_loss_{k}", v, step=epoch)
-                mlflow.log_metric("R2/train", train_r2, step=epoch)
-                mlflow.log_metric("R2/test", test_r2, step=epoch)
-                mlflow.log_metric("R/train", train_r, step=epoch)
-                mlflow.log_metric("R/test", test_r, step=epoch)
-                mlflow.log_metric("tau/train", train_tau, step=epoch)
-                mlflow.log_metric("tau/test", test_tau, step=epoch)
-                mlflow.log_metric("epoch_time", end_time - start_time, step=epoch)
-            except Exception as e:
-                print(f"Error logging to MLflow: {e}")
-
-            history["epoch"].append(epoch)
-            history["train_loss_total"].append(train_losses.get("total", 0))
-            history["test_loss_total"].append(test_losses.get("total", 0))
-            history["train_r2"].append(train_r2)
-            history["test_r2"].append(test_r2)
-
-            if epoch == 1 or epoch % 50 == 0:
-                save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
-                utils.save_state(save_path, epoch, model, optimizer)
-    
         try:
-            # Log best checkpoint and metrics at the end
-            if best_ckpt_path and os.path.exists(best_ckpt_path):
-                try:
-                    mlflow.log_metric("best_epoch", best_epoch)
-                    if best_metric_task is not None:
-                        mlflow.log_metric(f"best_test_loss_{best_metric_task}", best_metric)
-                    mlflow.log_artifact(best_ckpt_path, artifact_path="best_checkpoint")
-                except Exception as e:
-                    print(f"Error logging best checkpoint to MLflow: {e}")
+            for epoch in range(last_epoch + 1, config.run.num_epochs + 1):
+                start_time = time.time()
+                data.sample_keys()
 
-            mlflow.pytorch.log_model(model, artifact_path="model")
+                # Start profiler for specific epochs
+                should_profile = profiler_enabled and epoch in profiler_epochs
+                if should_profile:
+                    profiler_context = profile(
+                        activities=profiler_activities,
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=True,
+                        on_trace_ready=lambda trace: trace.export_chrome_trace(
+                            os.path.join(profiler_output_dir, f"epoch_{epoch}_trace.json")
+                        )
+                    )
+                    profiler_context.__enter__()
+                    logger.info(f"Starting profiler for epoch {epoch}")
+
+                model.reset_log()
+                run(model, data, device, optimizer, True, should_profile)
+                train_losses = utils.get_losses(model)
+
+                task_name = "scoring"
+                if task_name not in model.predictions:
+                    task_name = list(model.predictions.keys())[0]
+                train_r, train_r2, train_tau = utils.get_stats(model, task_name)
+                utils.write_predictions(model, config, True)
+                # Log energy distribution for training predictions every 25 epochs
+                try:
+                    if epoch % 25 == 0:
+                        log_energy_distribution_to_mlflow(model, config, stage="train", epoch=epoch)
+                except Exception as e:
+                    print(f"Error logging train energy distribution: {e}")
+
+                model.reset_log()
+                run(model, data, device, optimizer, False, should_profile)
+                test_losses = utils.get_losses(model)
+                test_r, test_r2, test_tau = utils.get_stats(model, task_name)
+                utils.write_predictions(model, config, False)
+                # Do not log energy distribution for validation/test per user request
+
+                # Update best checkpoint based on test loss of the scoring task (fallback to first task)
+                metric_task = "scoring" if "scoring" in test_losses else None
+                if metric_task is None:
+                    for k in test_losses.keys():
+                        if k != "dvdw":
+                            metric_task = k
+                            break
+                if metric_task is not None:
+                    current_metric = test_losses[metric_task]
+                    if current_metric < best_metric:
+                        best_metric = current_metric
+                        best_epoch = epoch
+                        best_metric_task = metric_task
+                        best_ckpt_path = os.path.join(config.run.checkpoint_dir, "save_best.pt")
+                        utils.save_state(best_ckpt_path, epoch, model, optimizer)
+                        try:
+                            mlflow.log_metric(f"best_test_loss_{metric_task}", best_metric, step=epoch)
+                            mlflow.log_metric("best_epoch_so_far", best_epoch, step=epoch)
+                        except Exception as e:
+                            print(f"Error logging best-so-far metrics to MLflow: {e}")
+
+                # Stop profiler and save results
+                if should_profile and profiler_context:
+                    profiler_context.__exit__(None, None, None)
+                    
+                    # Export additional profiler outputs
+                    try:
+                        # Save detailed profiler table
+                        profile_table = profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=20)
+                        with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_table.txt"), "w") as f:
+                            f.write(profile_table)
+                        
+                        # Save profiler statistics by input shapes
+                        profile_shapes = profiler_context.key_averages(group_by_input_shape=True).table(sort_by="cuda_time_total", row_limit=20)
+                        with open(os.path.join(profiler_output_dir, f"epoch_{epoch}_profile_shapes.txt"), "w") as f:
+                            f.write(profile_shapes)
+                            
+                        logger.info(f"Profiler data saved to {profiler_output_dir}/epoch_{epoch}_*")
+                        print(f"\nTop operations by CUDA time for epoch {epoch}:")
+                        print(profiler_context.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+                        
+                    except Exception as e:
+                        logger.error(f"Error saving profiler data: {e}")
+
+                end_time = time.time()
+
+                if epoch == last_epoch + 1:
+                    logger.info(utils.get_log_line(data.tasks, title=True))
+
+                log_elements = [
+                    str(epoch),
+                    utils.get_log_line(data.tasks, train_losses),
+                    utils.get_log_line(data.tasks, test_losses),
+                    f"{train_r:.3f}",
+                    f"{test_r:.3f}",
+                    f"{train_tau:.3f}",
+                    f"{test_tau:.3f}",
+                    f"{end_time - start_time:.3f}",
+                ]
+                logger.info("\t".join(log_elements))
+
+                writer.add_scalars("training loss", train_losses, epoch)
+                writer.add_scalars("test loss", test_losses, epoch)
+                writer.add_scalar("R2/train", train_r2, epoch)
+                writer.add_scalar("R2/test", test_r2, epoch)
+                writer.add_scalar("R/train", train_r, epoch)
+                writer.add_scalar("R/test", test_r, epoch)
+                writer.add_scalar("tau/train", train_tau, epoch)
+                writer.add_scalar("tau/test", test_tau, epoch)
+
+                # Log to MLflow
+                try:
+                    for k, v in train_losses.items():
+                        mlflow.log_metric(f"train_loss_{k}", v, step=epoch)
+                    for k, v in test_losses.items():
+                        mlflow.log_metric(f"test_loss_{k}", v, step=epoch)
+                    mlflow.log_metric("R2/train", train_r2, step=epoch)
+                    mlflow.log_metric("R2/test", test_r2, step=epoch)
+                    mlflow.log_metric("R/train", train_r, step=epoch)
+                    mlflow.log_metric("R/test", test_r, step=epoch)
+                    mlflow.log_metric("tau/train", train_tau, step=epoch)
+                    mlflow.log_metric("tau/test", test_tau, step=epoch)
+                    mlflow.log_metric("epoch_time", end_time - start_time, step=epoch)
+                except Exception as e:
+                    print(f"Error logging to MLflow: {e}")
+
+                history["epoch"].append(epoch)
+                history["train_loss_total"].append(train_losses.get("total", 0))
+                history["test_loss_total"].append(test_losses.get("total", 0))
+                history["train_r2"].append(train_r2)
+                history["test_r2"].append(test_r2)
+
+                if epoch == 1 or epoch % 50 == 0:
+                    save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
+                    utils.save_state(save_path, epoch, model, optimizer)
+
+        except KeyboardInterrupt:
+            interrupted = True
+            logger.info("Training interrupted by user (KeyboardInterrupt). Proceeding to log artifacts.")
         except Exception as e:
-            print(f"Error logging model to MLflow: {e}")
+            interrupted = True
+            logger.error(f"Training terminated due to an exception: {e}")
+        finally:
+            # Ensure any active profiler context is gracefully closed
+            try:
+                if profiler_context is not None:
+                    profiler_context.__exit__(None, None, None)
+            except Exception:
+                pass
+
+            # Always attempt to log final artifacts to MLflow (even if interrupted)
+            try:
+                if best_ckpt_path and os.path.exists(best_ckpt_path):
+                    try:
+                        mlflow.log_metric("best_epoch", best_epoch)
+                        if best_metric_task is not None:
+                            mlflow.log_metric(f"best_test_loss_{best_metric_task}", best_metric)
+                        mlflow.log_artifact(best_ckpt_path, artifact_path="best_checkpoint")
+                    except Exception as e:
+                        print(f"Error logging best checkpoint to MLflow: {e}")
+
+                mlflow.pytorch.log_model(model, artifact_path="model")
+            except Exception as e:
+                print(f"Error logging model to MLflow: {e}")
+
+            # Close tensorboard writer
+            try:
+                writer.flush()
+                writer.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = False
