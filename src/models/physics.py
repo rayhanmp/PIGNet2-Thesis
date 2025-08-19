@@ -35,6 +35,36 @@ def interaction_edges(
     return edges.t().contiguous()
 
 
+def all_pairs_edges(
+    batch: LongTensor,
+) -> LongTensor:
+    """Return all unique unordered node pairs within each graph.
+
+    Args:
+        batch: (nodes,)
+
+    Return: (2, node_pairs)
+        For each graph in the batch, includes every pair (i, j) with i < j.
+        This covers intra-ligand, intra-protein, and protein–ligand pairs
+        without double counting.
+    """
+    device = batch.device
+    nodes = torch.arange(batch.numel(), device=device)
+    edges = torch.tensor([], dtype=torch.long, device=device)
+
+    for i in range(batch.max() + 1):
+        batch_mask = batch == i
+        graph_nodes = nodes[batch_mask]
+        if graph_nodes.numel() < 2:
+            continue
+        # Cartesian product then keep i < j to avoid duplicates and self-pairs
+        pairs = torch.cartesian_prod(graph_nodes, graph_nodes)
+        pairs = pairs[pairs[:, 0] < pairs[:, 1]]
+        edges = torch.cat((edges, pairs))
+
+    return edges.t().contiguous()
+
+
 def distances(
     pos: FloatTensor,
     edge_index: LongTensor,

@@ -159,12 +159,11 @@ class PIGNetMorse(PIGNet):
                 born_radii = u * span + cfg.gb_radii_scale[0]
 
         # Prepare a pair-energies container: (energy_types, pairs)
+        # Only inter-molecular terms are included here.
         # Base: vdW (Morse) + H-bond + Metal-Ligand + Hydrophobic = 4
         num_energy_types = 4
         if cfg.get("include_ionic", False):
             num_energy_types += 1
-        if cfg.get("include_gb", False):
-            num_energy_types += 1  # pairwise GB term
         energies_pairs = torch.empty(num_energy_types, D.numel()).to(self.device)
         energy_idx = 0
 
@@ -219,26 +218,34 @@ class PIGNetMorse(PIGNet):
             )
             energy_idx += 1
 
-        # Include Generalized Born pairwise energy if required
-        gb_energy_per_graph = torch.zeros(sample.batch.max() + 1, device=self.device)
+        # Include Generalized Born terms (pairwise: intra+inter; self)
+        gb_pairwise_per_graph = None
+        gb_self_per_graph = None
         if cfg.get("include_gb", False):
-            gb_pairwise_energy = physics.generalised_born_energy(
-                D,
+            # All unique pairs within each graph
+            edge_index_all = physics.all_pairs_edges(sample.batch)
+            D_all = physics.distances(sample.pos, edge_index_all)
+            _mask_all = (cfg.interaction_range[0] <= D_all) & (D_all <= cfg.interaction_range[1])
+            edge_index_all = edge_index_all[:, _mask_all]
+            D_all = D_all[_mask_all]
+
+            gb_pairwise_all = physics.generalised_born_energy(
+                D_all,
                 born_radii,
                 sample.partial_charges,
-                edge_index_i,
+                edge_index_all,
                 cfg.gb_dielectric_in,
                 cfg.gb_dielectric_out,
             )
-            energies_pairs[energy_idx] = gb_pairwise_energy
-            # GB self-energy (per atom) -> sum per graph
+            gb_pairwise_per_graph = scatter(gb_pairwise_all, sample.batch[edge_index_all[0]])
+
             gb_self_energy = physics.self_born_energy(
                 born_radii,
                 sample.partial_charges,
                 cfg.gb_dielectric_in,
                 cfg.gb_dielectric_out,
             )
-            gb_energy_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
+            gb_self_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
 
         # Interaction masks according to atom types: (energy_types, pairs)
         masks = physics.interaction_masks(
@@ -249,19 +256,20 @@ class PIGNetMorse(PIGNet):
             edge_index_i,
             include_ionic=cfg.get("include_ionic", False),
         )
-        if cfg.get("include_gb", False):
-            gb_mask = torch.ones(D.numel(), dtype=torch.bool, device=self.device)
-            masks = torch.cat([masks, gb_mask.unsqueeze(0)])
 
         energies_pairs = energies_pairs * masks
         # Per-graph sum -> (energy_types, batch)
-        energies = scatter(energies_pairs, sample.batch[edge_index_i[0]])
+        energies = scatter(energies_pairs, sample.batch[edge_index_i[0]], dim=1)
         # Reshape -> (batch, energy_types)
         energies = energies.t().contiguous()
 
-        # Add GB self-energy per graph as separate column
+        # Append GB pairwise and self energies per graph as separate columns
         if cfg.get("include_gb", False):
-            energies = torch.cat([energies, gb_energy_per_graph.unsqueeze(1)], dim=1)
+            energies = torch.cat([
+                energies,
+                gb_pairwise_per_graph.unsqueeze(1),
+                gb_self_per_graph.unsqueeze(1),
+            ], dim=1)
 
         # Rotor penalty
         if cfg.rotor_penalty:
