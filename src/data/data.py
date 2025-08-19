@@ -199,6 +199,10 @@ def mol_to_data(
     x = torch.tensor([atom_to_features(atom) for atom in atoms], dtype=torch.float)
     data.x = x
 
+    # Atomic numbers for per-atom property control (e.g., Born radii lower bounds)
+    atomic_numbers = torch.tensor([atom.GetAtomicNum() for atom in atoms], dtype=torch.long)
+    data.atomic_numbers = atomic_numbers
+
     # Adjacency matrix - single operation
     adj = torch.tensor(rdmolops.GetAdjacencyMatrix(mol))
     edge_index, _ = dense_to_sparse(adj)

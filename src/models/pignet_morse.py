@@ -57,7 +57,7 @@ class PIGNetMorse(PIGNet):
                 (Linear(dim_gnn, dim_mlp), "x -> x"),
                 ReLU(),
                 Linear(dim_mlp, 1),
-                ReLU(),
+                Sigmoid(),
             ],
         )
 
@@ -109,8 +109,58 @@ class PIGNetMorse(PIGNet):
         # Predict born radii for each atom
         born_radii = None
         if cfg.get("include_gb", False):
-            born_radii = self.nn_gb_radius(x).squeeze(-1)
-            born_radii = born_radii * cfg.gb_radii_scale[1] + cfg.gb_radii_scale[0]
+            # u in (0,1)
+            u = self.nn_gb_radius(x).squeeze(-1)
+
+            dev = x.device
+            dtype = u.dtype
+
+            # Per-element lower bounds (Å). Fallback is global min.
+            try:
+                Z = sample.atomic_numbers  # shape: (num_nodes,)
+                global_min = torch.as_tensor(cfg.gb_radii_scale[0], device=dev, dtype=dtype)
+                global_max = torch.as_tensor(cfg.gb_radii_scale[1], device=dev, dtype=dtype)
+
+                per_atom_min = torch.full_like(u, global_min)
+
+                # Vectorised assignment of element minima
+                element_minima = {
+                    1: 1.20,  # H
+                    6: 1.70,  # C
+                    7: 1.55,  # N
+                    8: 1.50,  # O
+                    9: 1.50,  # F
+                    14: 2.10, # Si
+                    15: 1.85, # P
+                    16: 1.80, # S
+                    17: 1.70, # Cl
+                }
+
+                # Build a per-atom minima tensor without Python loops over atoms
+                for z_val, min_val in element_minima.items():
+                    mask = (Z == z_val)
+                    if mask.any():
+                        per_atom_min = torch.where(
+                            mask,
+                            torch.as_tensor(min_val, device=dev, dtype=dtype),
+                            per_atom_min
+                        )
+
+                # Span is per-atom: [per_atom_min, global_max]
+                span = global_max - per_atom_min
+                # Avoid negative or zero span if config is odd
+                span = torch.clamp(span, min=1e-6)
+
+                # Final radii, differentiable inside the interval
+                born_radii = u * span + per_atom_min
+
+                # Numerical safety upper clamp to global_max
+                born_radii = torch.minimum(born_radii, global_max)
+
+            except AttributeError:
+                # No atomic numbers available - fall back to global scaling
+                span = cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]
+                born_radii = u * span + cfg.gb_radii_scale[0]
 
         # Prepare a pair-energies container: (energy_types, pairs)
         # Base: vdW (Morse) + H-bond + Metal-Ligand + Hydrophobic = 4
