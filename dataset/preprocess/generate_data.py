@@ -43,7 +43,14 @@ def _mol_to_xyz_block(mol: Chem.Mol) -> str:
 
     conf = mol.GetConformer()
     natoms = mol.GetNumAtoms()
-    lines = [str(natoms)]
+    # XYZ format requires a second line (comment). Provide name if available.
+    name = ""
+    try:
+        if mol.HasProp("_Name"):
+            name = mol.GetProp("_Name")
+    except Exception:
+        name = ""
+    lines = [str(natoms), name]
     for atom_idx in range(natoms):
         atom = mol.GetAtomWithIdx(atom_idx)
         pos = conf.GetAtomPosition(atom_idx)
