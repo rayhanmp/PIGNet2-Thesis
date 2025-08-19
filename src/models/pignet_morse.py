@@ -51,7 +51,7 @@ class PIGNetMorse(PIGNet):
                 ReLU(),
             ],
         )
-        self.nn_gb_radius = Sequential(
+        self.nn_born_radii = Sequential(
             "x",
             [
                 (Linear(dim_gnn, dim_mlp), "x -> x"),
@@ -110,7 +110,7 @@ class PIGNetMorse(PIGNet):
         born_radii = None
         if cfg.get("include_gb", False):
             # u in (0,1)
-            u = self.nn_gb_radius(x).squeeze(-1)
+            u = self.nn_born_radii(x).squeeze(-1)
 
             dev = x.device
             dtype = u.dtype
@@ -277,4 +277,55 @@ class PIGNetMorse(PIGNet):
         # Expose last per-atom Born radii for inspection after inference
         self.last_born_radii = born_radii
 
-        return energies, dvdw_radii
+        return energies, dvdw_radii, born_radii
+
+    def loss_born_radii(self, born_radii: torch.Tensor, sample: Batch):
+        """Bound-margin + optional element prior penalty for Born radii.
+
+        - Bound-margin: discourages radii from hugging [rmin, rmax] by adding
+          a hinge penalty outside [rmin+margin, rmax-margin].
+        - Element prior (optional): encourage per-element means via L2 toward
+          a prior table if `model.gb_element_priors` is provided in config.
+        """
+        if born_radii is None:
+            return torch.tensor(0.0, device=self.device)
+
+        cfg = self.config.model
+        rmin, rmax = cfg.gb_radii_scale[0], cfg.gb_radii_scale[1]
+
+        # Margin config
+        margin = cfg.get("gb_bound_margin", None)
+        if margin is None:
+            margin_frac = cfg.get("gb_bound_margin_fraction", 0.1)
+            margin = float(margin_frac) * (float(rmax) - float(rmin))
+
+        lower_bound = float(rmin) + margin
+        upper_bound = float(rmax) - margin
+
+        lower_violation = torch.relu(lower_bound - born_radii)
+        upper_violation = torch.relu(born_radii - upper_bound)
+        loss = (lower_violation + upper_violation).mean()
+
+        # Optional per-element priors
+        priors = getattr(cfg, "gb_element_priors", None)
+        if priors is not None and hasattr(sample, "atomic_numbers"):
+            # Build tensor of priors with fallback to mid-point if element not listed
+            Z = sample.atomic_numbers
+            prior_mid = 0.5 * (float(rmin) + float(rmax))
+            prior_tensor = torch.full_like(born_radii, prior_mid)
+
+            # Map from config dict keys (as str or int) to float priors
+            for k, v in priors.items():
+                try:
+                    z_val = int(k)
+                    val = float(v)
+                except Exception:
+                    continue
+                mask = (Z == z_val)
+                if mask.any():
+                    prior_tensor = torch.where(mask, torch.as_tensor(val, device=prior_tensor.device, dtype=prior_tensor.dtype), prior_tensor)
+
+            prior_weight = float(cfg.get("gb_prior_weight", 1.0))
+            loss = loss + prior_weight * (born_radii - prior_tensor).pow(2).mean()
+
+        return loss
