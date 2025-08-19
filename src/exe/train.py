@@ -21,15 +21,25 @@ import mlflow
 import mlflow.pytorch
 import matplotlib.pyplot as plt
 import io
+import tempfile
 import numpy as np
 import math
 
 def log_plot_to_mlflow(fig, artifact_name):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png")
-    buf.seek(0)
-    mlflow.log_image(buf, artifact_file=artifact_name)
-    plt.close(fig)
+    try:
+        # Preferred: directly log the matplotlib figure
+        if hasattr(mlflow, "log_figure"):
+            mlflow.log_figure(fig, artifact_file=artifact_name)
+        else:
+            # Fallback: save to temp and log as artifact
+            dir_part = os.path.dirname(artifact_name)
+            base = os.path.basename(artifact_name)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_path = os.path.join(tmpdir, base)
+                fig.savefig(out_path, format="png")
+                mlflow.log_artifact(out_path, artifact_path=dir_part if dir_part else None)
+    finally:
+        plt.close(fig)
 
 
 def _energy_component_names(config):
