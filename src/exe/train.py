@@ -83,12 +83,8 @@ def log_energy_distribution_to_mlflow(model, config, stage, epoch):
             if len(data) == 0:
                 continue
             arr = np.asarray(data, dtype=float)
-            # Always log mean
+            # Log only mean for all components
             mlflow.log_metric(f"energy/{stage}/{name}_mean", float(arr.mean()), step=epoch)
-            # For GB components, also log min and max
-            if name.startswith("gb"):
-                mlflow.log_metric(f"energy/{stage}/{name}_min", float(arr.min()), step=epoch)
-                mlflow.log_metric(f"energy/{stage}/{name}_max", float(arr.max()), step=epoch)
     except Exception as e:
         print(f"Error logging energy distribution stats to MLflow: {e}")
 
@@ -256,9 +252,10 @@ def main(config: DictConfig):
                 task_name = list(model.predictions.keys())[0]
             train_r, train_r2, train_tau = utils.get_stats(model, task_name)
             utils.write_predictions(model, config, True)
-            # Log energy distribution for training predictions
+            # Log energy distribution for training predictions every 25 epochs
             try:
-                log_energy_distribution_to_mlflow(model, config, stage="train", epoch=epoch)
+                if epoch % 25 == 0:
+                    log_energy_distribution_to_mlflow(model, config, stage="train", epoch=epoch)
             except Exception as e:
                 print(f"Error logging train energy distribution: {e}")
 
@@ -267,11 +264,7 @@ def main(config: DictConfig):
             test_losses = utils.get_losses(model)
             test_r, test_r2, test_tau = utils.get_stats(model, task_name)
             utils.write_predictions(model, config, False)
-            # Log energy distribution for validation/test predictions
-            try:
-                log_energy_distribution_to_mlflow(model, config, stage="test", epoch=epoch)
-            except Exception as e:
-                print(f"Error logging test energy distribution: {e}")
+            # Do not log energy distribution for validation/test per user request
 
             # Update best checkpoint based on test loss of the scoring task (fallback to first task)
             metric_task = "scoring" if "scoring" in test_losses else None
