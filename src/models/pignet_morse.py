@@ -67,10 +67,6 @@ class PIGNetMorse(PIGNet):
         self.rotor_coeff = Parameter(torch.tensor([0.102]))
         self.ionic_coeff = Parameter(torch.tensor([1.0]))  # NOT USED
 
-        # Generalised born coeff
-        if config.model.get("include_gb", False):
-            self.gb_coeff = Parameter(torch.tensor([1.0]))
-
     def forward(self, sample: Batch):
         cfg = self.config.model
 
@@ -234,7 +230,7 @@ class PIGNetMorse(PIGNet):
                 cfg.gb_dielectric_in,
                 cfg.gb_dielectric_out,
             )
-            energies_pairs[energy_idx] = self.gb_coeff**2 * gb_pairwise_energy
+            energies_pairs[energy_idx] = gb_pairwise_energy
             # GB self-energy (per atom) -> sum per graph
             gb_self_energy = physics.self_born_energy(
                 born_radii,
@@ -242,7 +238,6 @@ class PIGNetMorse(PIGNet):
                 cfg.gb_dielectric_in,
                 cfg.gb_dielectric_out,
             )
-            gb_self_energy = self.gb_coeff**2 * gb_self_energy
             gb_energy_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
 
         # Interaction masks according to atom types: (energy_types, pairs)
@@ -277,55 +272,4 @@ class PIGNetMorse(PIGNet):
         # Expose last per-atom Born radii for inspection after inference
         self.last_born_radii = born_radii
 
-        return energies, dvdw_radii, born_radii
-
-    def loss_born_radii(self, born_radii: torch.Tensor, sample: Batch):
-        """Bound-margin + optional element prior penalty for Born radii.
-
-        - Bound-margin: discourages radii from hugging [rmin, rmax] by adding
-          a hinge penalty outside [rmin+margin, rmax-margin].
-        - Element prior (optional): encourage per-element means via L2 toward
-          a prior table if `model.gb_element_priors` is provided in config.
-        """
-        if born_radii is None:
-            return torch.tensor(0.0, device=self.device)
-
-        cfg = self.config.model
-        rmin, rmax = cfg.gb_radii_scale[0], cfg.gb_radii_scale[1]
-
-        # Margin config
-        margin = cfg.get("gb_bound_margin", None)
-        if margin is None:
-            margin_frac = cfg.get("gb_bound_margin_fraction", 0.1)
-            margin = float(margin_frac) * (float(rmax) - float(rmin))
-
-        lower_bound = float(rmin) + margin
-        upper_bound = float(rmax) - margin
-
-        lower_violation = torch.relu(lower_bound - born_radii)
-        upper_violation = torch.relu(born_radii - upper_bound)
-        loss = (lower_violation + upper_violation).mean()
-
-        # Optional per-element priors
-        priors = getattr(cfg, "gb_element_priors", None)
-        if priors is not None and hasattr(sample, "atomic_numbers"):
-            # Build tensor of priors with fallback to mid-point if element not listed
-            Z = sample.atomic_numbers
-            prior_mid = 0.5 * (float(rmin) + float(rmax))
-            prior_tensor = torch.full_like(born_radii, prior_mid)
-
-            # Map from config dict keys (as str or int) to float priors
-            for k, v in priors.items():
-                try:
-                    z_val = int(k)
-                    val = float(v)
-                except Exception:
-                    continue
-                mask = (Z == z_val)
-                if mask.any():
-                    prior_tensor = torch.where(mask, torch.as_tensor(val, device=prior_tensor.device, dtype=prior_tensor.dtype), prior_tensor)
-
-            prior_weight = float(cfg.get("gb_prior_weight", 1.0))
-            loss = loss + prior_weight * (born_radii - prior_tensor).pow(2).mean()
-
-        return loss
+        return energies, dvdw_radii

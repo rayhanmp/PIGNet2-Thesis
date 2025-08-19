@@ -91,11 +91,7 @@ class PIGNet(Module):
         self.hbond_coeff = Parameter(torch.tensor([1.0]))
         self.hydrophobic_coeff = Parameter(torch.tensor([0.5]))
         self.rotor_coeff = Parameter(torch.tensor([0.5]))
-        
-        # Generalized Born coefficient
-        if config.model.get("include_gb", False):
-            self.gb_coeff = Parameter(torch.tensor([1.0]))
-        
+                
         if config.model.get("include_ionic", False):
             self.ionic_coeff = Parameter(torch.tensor([1.0]))
 
@@ -237,14 +233,13 @@ class PIGNet(Module):
                 D, born_radii, sample.partial_charges, edge_index_i,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
-            energies_pairs[energy_idx] = self.gb_coeff**2 * gb_pairwise_energy
+            energies_pairs[energy_idx] = gb_pairwise_energy
             
             # GB self-energy (per atom, then summed per graph)
             gb_self_energy = physics.self_born_energy(
                 born_radii, sample.partial_charges,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
-            gb_self_energy = self.gb_coeff**2 * gb_self_energy
             gb_energy_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
 
         # Interaction masks according to atom types: (energy_types, pairs)
@@ -288,12 +283,30 @@ class PIGNet(Module):
         loss = dvdw_radii.pow(2).mean()
         return loss
 
-    def loss_born_radii(self, born_radii: torch.Tensor):
-        """Regularization loss for Born radii to prevent extreme values."""
+    def loss_born_radii(self, born_radii: torch.Tensor, sample: Batch):
+        """Default Born radii regularizer (base model): simple margin-from-bounds penalty.
+
+        Subclasses can override for element-specific priors or different behavior.
+        """
         if born_radii is None:
             return torch.tensor(0.0, device=self.device)
-        # Penalize radii that are too large or too small
-        loss = born_radii.pow(2).mean()
+
+        cfg = self.config.model
+        rmin, rmax = cfg.gb_radii_scale[0], cfg.gb_radii_scale[1]
+
+        # Determine absolute margin
+        margin = cfg.get("gb_bound_margin", None)
+        if margin is None:
+            margin_frac = cfg.get("gb_bound_margin_fraction", 0.1)
+            margin = float(margin_frac) * (float(rmax) - float(rmin))
+
+        lower_bound = float(rmin) + margin
+        upper_bound = float(rmax) - margin
+
+        # Hinge penalties if radii hug the bounds
+        lower_violation = torch.relu(lower_bound - born_radii)
+        upper_violation = torch.relu(born_radii - upper_bound)
+        loss = (lower_violation + upper_violation).mean()
         return loss
 
     def loss_regression(
@@ -336,7 +349,7 @@ class PIGNet(Module):
                 born_radii = None
 
             loss_dvdw = self.loss_dvdw(dvdw_radii)
-            loss_born = self.loss_born_radii(born_radii)
+            loss_born = self.loss_born_radii(born_radii, sample)
             
             if task_config.objective == "regression":
                 loss_energy = self.loss_regression(energies, sample.y)
@@ -404,7 +417,6 @@ class PIGNet(Module):
             "hbond_coeff",
             "hydrophobic_coeff",
             "rotor_coeff",
-            "gb_coeff",
             "ionic_coeff",
         }
 
