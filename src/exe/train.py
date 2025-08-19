@@ -59,7 +59,7 @@ def _energy_component_names(config):
 
 
 def log_energy_distribution_to_mlflow(model, config, stage, epoch):
-    """Aggregate per-sample energy components and log histogram plots + stats to MLflow."""
+    """Aggregate per-sample energy components and log summary stats to MLflow."""
     # Collect values per component across all tasks/keys
     component_names = _energy_component_names(config)
     values_per_component = [[] for _ in component_names]
@@ -76,66 +76,21 @@ def log_energy_distribution_to_mlflow(model, config, stage, epoch):
     if total_count == 0:
         return  # Nothing to log this epoch (e.g., empty predictions)
 
-    # Plot histograms for individual components
-    num_components = len(component_names)
-    cols = min(4, num_components)
-    rows = int(math.ceil(num_components / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), squeeze=False)
-    axes_flat = [ax for row in axes for ax in row]
-
-    for i, name in enumerate(component_names):
-        data = values_per_component[i]
-        ax = axes_flat[i]
-        if len(data) > 0:
-            ax.hist(data, bins=50, color="steelblue", alpha=0.9)
-        ax.set_title(f"{name} (n={len(data)})")
-        ax.set_xlabel("Energy")
-        ax.set_ylabel("Count")
-
-    # Hide any unused subplots
-    for j in range(num_components, len(axes_flat)):
-        axes_flat[j].axis("off")
-
-    plt.tight_layout()
-    # Log plot image
-    log_plot_to_mlflow(fig, f"energy_distribution/{stage}_epoch_{epoch}.png")
-
-    # Log basic statistics per component for quick numeric tracking
+    # Log summary statistics per component
     try:
         for i, name in enumerate(component_names):
             data = values_per_component[i]
             if len(data) == 0:
                 continue
             arr = np.asarray(data, dtype=float)
+            # Always log mean
             mlflow.log_metric(f"energy/{stage}/{name}_mean", float(arr.mean()), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/{name}_std", float(arr.std(ddof=0)), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/{name}_min", float(arr.min()), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/{name}_max", float(arr.max()), step=epoch)
+            # For GB components, also log min and max
+            if name.startswith("gb"):
+                mlflow.log_metric(f"energy/{stage}/{name}_min", float(arr.min()), step=epoch)
+                mlflow.log_metric(f"energy/{stage}/{name}_max", float(arr.max()), step=epoch)
     except Exception as e:
         print(f"Error logging energy distribution stats to MLflow: {e}")
-
-    # Also log total energy distribution across samples
-    try:
-        totals = []
-        for task in model.predictions:
-            for _, energies in model.predictions[task].items():
-                totals.append(float(sum(energies)))
-        if len(totals) > 0:
-            fig2, ax2 = plt.subplots(1, 1, figsize=(5, 3))
-            ax2.hist(totals, bins=50, color="darkorange", alpha=0.9)
-            ax2.set_title(f"total_energy (n={len(totals)})")
-            ax2.set_xlabel("Energy")
-            ax2.set_ylabel("Count")
-            plt.tight_layout()
-            log_plot_to_mlflow(fig2, f"energy_distribution/{stage}_total_epoch_{epoch}.png")
-
-            arr = np.asarray(totals, dtype=float)
-            mlflow.log_metric(f"energy/{stage}/total_mean", float(arr.mean()), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/total_std", float(arr.std(ddof=0)), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/total_min", float(arr.min()), step=epoch)
-            mlflow.log_metric(f"energy/{stage}/total_max", float(arr.max()), step=epoch)
-    except Exception as e:
-        print(f"Error logging total energy distribution to MLflow: {e}")
 
 
 def run(
