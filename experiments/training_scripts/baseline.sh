@@ -17,7 +17,7 @@ python -u ${EXE_DIR}/exe/train.py \
   model=pignet_morse \
   model.short_range_A=2.1 \
   run.dropout_rate=0.1 \
-  run.lr=4e-4 \
+  run.lr=1e-3 \
   run.batch_size=64 \
   run.save_every=1 \
   run.num_epochs=2000 \

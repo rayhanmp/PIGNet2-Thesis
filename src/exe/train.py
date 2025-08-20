@@ -12,6 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.profiler import profile, record_function, ProfilerActivity
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # isort: off
 import path
@@ -168,6 +169,24 @@ def main(config: DictConfig):
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         except Exception as e:
             logger.warning(f"Could not load optimizer state from checkpoint: {e}. Using freshly initialized optimizer.")
+
+    # Cosine annealing scheduler
+    try:
+        # On fresh runs, ensure base LRs start from configured value
+        if not checkpoint:
+            base_lr = float(config.run.lr)
+            for group in optimizer.param_groups:
+                group["lr"] = base_lr
+        eta_min = float(getattr(config.run, "eta_min", 1e-6))
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=int(config.run.num_epochs),
+            eta_min=eta_min,
+            last_epoch=last_epoch,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to initialize cosine annealing scheduler: {e}")
+        scheduler = None
 
     for task in data.tasks:
         if dir_path := config.data[task].processed_data_dir:
@@ -357,6 +376,11 @@ def main(config: DictConfig):
                     mlflow.log_metric("tau/train", train_tau, step=epoch)
                     mlflow.log_metric("tau/test", test_tau, step=epoch)
                     mlflow.log_metric("epoch_time", end_time - start_time, step=epoch)
+                    # LR to MLflow
+                    try:
+                        mlflow.log_metric("lr", optimizer.param_groups[0]["lr"], step=epoch)
+                    except Exception:
+                        pass
                 except Exception as e:
                     print(f"Error logging to MLflow: {e}")
 
@@ -369,6 +393,13 @@ def main(config: DictConfig):
                 if epoch == 1 or epoch % 50 == 0:
                     save_path = os.path.join(config.run.checkpoint_dir, f"save_{epoch}.pt")
                     utils.save_state(save_path, epoch, model, optimizer)
+
+                # Advance LR scheduler to the next epoch
+                if scheduler is not None:
+                    try:
+                        scheduler.step()
+                    except Exception as e:
+                        logger.warning(f"Scheduler step failed at epoch {epoch}: {e}")
 
         except KeyboardInterrupt:
             interrupted = True
