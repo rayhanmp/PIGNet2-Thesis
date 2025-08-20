@@ -182,8 +182,13 @@ def main(config: DictConfig):
             optimizer,
             T_max=int(config.run.num_epochs),
             eta_min=eta_min,
-            last_epoch=last_epoch,
+            last_epoch=-1,  # create fresh so 'initial_lr' is set
         )
+        # Advance to the correct epoch so LR continues properly on resume
+        try:
+            scheduler.step(last_epoch)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"Failed to initialize cosine annealing scheduler: {e}")
         scheduler = None
