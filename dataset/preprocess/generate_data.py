@@ -12,7 +12,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from protonate import protonate_ligand, protonate_pdb
 from pymol import cmd
-from pymol import chempy
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
