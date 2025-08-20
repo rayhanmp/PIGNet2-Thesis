@@ -77,16 +77,41 @@ class PIGNet(Module):
             ],
         )
 
-        # Born radii prediction MLP 
+        # Born radii prediction
+        # Mode: shared or split_sharestem (configured via config.model.gb_head_mode)
+        self.gb_head_mode = config.model.get("gb_head_mode", "shared")
+        # Always keep shared head for backward compatibility
         self.nn_born_radii = Sequential(
             "x",
             [
                 (Linear(dim_gnn, dim_mlp), "x -> x"),
                 ReLU(),
                 Linear(dim_mlp, 1),
-                ReLU(),  # Ensure positive radii
+                ReLU(),
             ],
         )
+        if self.gb_head_mode == "split_sharestem":
+            self.nn_born_radii_stem = Sequential(
+                "x",
+                [
+                    (Linear(dim_gnn, dim_mlp), "x -> x"),
+                    ReLU(),
+                ],
+            )
+            self.nn_born_radii_head_complex = Sequential(
+                "h",
+                [
+                    (Linear(dim_mlp, 1), "h -> h"),
+                    ReLU(),
+                ],
+            )
+            self.nn_born_radii_head_iso = Sequential(
+                "h",
+                [
+                    (Linear(dim_mlp, 1), "h -> h"),
+                    ReLU(),
+                ],
+            )
 
         self.hbond_coeff = Parameter(torch.tensor([1.0]))
         self.hydrophobic_coeff = Parameter(torch.tensor([0.5]))
@@ -151,13 +176,22 @@ class PIGNet(Module):
         born_radii_full = None
         born_radii_iso = None
         if cfg.get("include_gb", False):
+            gb_head_mode = getattr(cfg, "gb_head_mode", "shared")
             # Complex (full) radii from full conv representation
-            born_radii_full = self.nn_born_radii(x).view(-1)
+            if gb_head_mode == "split_sharestem":
+                h_full = self.nn_born_radii_stem(x)
+                born_radii_full = self.nn_born_radii_head_complex(h_full).view(-1)
+            else:
+                born_radii_full = self.nn_born_radii(x).view(-1)
             born_radii_full = born_radii_full * (cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]) + cfg.gb_radii_scale[0]
             # Isolated radii from intraconv-only representation (faithful delta mode)
             if getattr(cfg, "gb_mode", "complex") == "delta_full":
                 x_iso = self.intraconv_only(x0, sample.edge_index)
-                born_radii_iso = self.nn_born_radii(x_iso).view(-1)
+                if gb_head_mode == "split_sharestem":
+                    h_iso = self.nn_born_radii_stem(x_iso)
+                    born_radii_iso = self.nn_born_radii_head_iso(h_iso).view(-1)
+                else:
+                    born_radii_iso = self.nn_born_radii(x_iso).view(-1)
                 born_radii_iso = born_radii_iso * (cfg.gb_radii_scale[1] - cfg.gb_radii_scale[0]) + cfg.gb_radii_scale[0]
 
         # Ligand-to-target uni-directional edges

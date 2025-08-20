@@ -51,6 +51,8 @@ class PIGNetMorse(PIGNet):
                 ReLU(),
             ],
         )
+        # Born radii heads
+        self.gb_head_mode = config.model.get("gb_head_mode", "shared")
         self.nn_born_radii = Sequential(
             "x",
             [
@@ -60,6 +62,28 @@ class PIGNetMorse(PIGNet):
                 Sigmoid(),
             ],
         )
+        if self.gb_head_mode == "split_sharestem":
+            self.nn_born_radii_stem = Sequential(
+                "x",
+                [
+                    (Linear(dim_gnn, dim_mlp), "x -> x"),
+                    ReLU(),
+                ],
+            )
+            self.nn_born_radii_head_complex = Sequential(
+                "h",
+                [
+                    (Linear(dim_mlp, 1), "h -> h"),
+                    Sigmoid(),
+                ],
+            )
+            self.nn_born_radii_head_iso = Sequential(
+                "h",
+                [
+                    (Linear(dim_mlp, 1), "h -> h"),
+                    Sigmoid(),
+                ],
+            )
 
         self.hbond_coeff = Parameter(torch.tensor([0.714]))
         self.metal_ligand_coeff = Parameter(torch.tensor([1.0]))
@@ -107,7 +131,11 @@ class PIGNetMorse(PIGNet):
         born_radii_iso = None
         if cfg.get("include_gb", False):
             # Complex (full) radii from full conv representation
-            u = self.nn_born_radii(x).squeeze(-1)
+            if getattr(cfg, "gb_head_mode", "shared") == "split_sharestem":
+                h_full = self.nn_born_radii_stem(x)
+                u = self.nn_born_radii_head_complex(h_full).squeeze(-1)
+            else:
+                u = self.nn_born_radii(x).squeeze(-1)
 
             dev = x.device
             dtype = u.dtype
@@ -162,7 +190,11 @@ class PIGNetMorse(PIGNet):
             # Isolated radii from intraconv-only representation (faithful delta mode)
             if getattr(cfg, "gb_mode", "complex") == "delta_full":
                 x_iso = self.intraconv_only(x0, sample.edge_index)
-                u_iso = self.nn_born_radii(x_iso).squeeze(-1)
+                if getattr(cfg, "gb_head_mode", "shared") == "split_sharestem":
+                    h_iso = self.nn_born_radii_stem(x_iso)
+                    u_iso = self.nn_born_radii_head_iso(h_iso).squeeze(-1)
+                else:
+                    u_iso = self.nn_born_radii(x_iso).squeeze(-1)
                 try:
                     Z = sample.atomic_numbers
                     global_min = torch.as_tensor(cfg.gb_radii_scale[0], device=x_iso.device, dtype=u_iso.dtype)
