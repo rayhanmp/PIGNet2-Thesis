@@ -17,6 +17,9 @@ short_range_A: 2.0
 include_ionic: false
 ionic_cutoffs: [-101.0, -100.0]
 
+# Learn per-atom partial charges with tanh head (range [-1, 1])
+learn_partial_charges: true
+
 # Generalized Born parameters
 include_gb: true
 gb_mode: delta_full  # complex | delta_full

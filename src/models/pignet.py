@@ -113,6 +113,18 @@ class PIGNet(Module):
                 ],
             )
 
+        # Optional learned partial charges head (range [-1, 1] via Tanh)
+        if config.model.get("learn_partial_charges", False):
+            self.nn_partial_charges = Sequential(
+                "x",
+                [
+                    (Linear(dim_gnn, dim_mlp), "x -> x"),
+                    ReLU(),
+                    Linear(dim_mlp, 1),
+                    Tanh(),
+                ],
+            )
+
         self.hbond_coeff = Parameter(torch.tensor([1.0]))
         self.hydrophobic_coeff = Parameter(torch.tensor([0.5]))
         self.rotor_coeff = Parameter(torch.tensor([0.5]))
@@ -171,6 +183,12 @@ class PIGNet(Module):
 
         # Graph convolutions (full: intra + inter)
         x = self.conv(x0, sample.edge_index, sample.edge_index_c)
+
+        # Select partial charges: learned (tanh-bounded) or provided by data
+        if cfg.get("learn_partial_charges", False):
+            partial_charges = self.nn_partial_charges(x).view(-1)
+        else:
+            partial_charges = sample.partial_charges
 
         # Predict Born radii for each atom (per-atom prediction)
         born_radii_full = None
@@ -262,8 +280,7 @@ class PIGNet(Module):
         if cfg.get("include_ionic", False):
             # Note the sign of `minima_ionic`
             minima_ionic = self.ionic_coeff**2 * (
-                sample.partial_charges[edge_index_i[0]]
-                * sample.partial_charges[edge_index_i[1]]
+                partial_charges[edge_index_i[0]] * partial_charges[edge_index_i[1]]
             )
             energies_pairs[energy_idx] = physics.linear_potential(
                 D, R, minima_ionic, *cfg.ionic_cutoffs
@@ -284,7 +301,7 @@ class PIGNet(Module):
             D_all = D_all[_mask_all]
 
             gb_pairwise_all = physics.generalised_born_energy(
-                D_all, born_radii_full, sample.partial_charges, edge_index_all,
+                D_all, born_radii_full, partial_charges, edge_index_all,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             # Sum pairwise GB per graph
@@ -292,7 +309,7 @@ class PIGNet(Module):
 
             # GB self-energy (per atom) -> per-graph sum
             gb_self_energy = physics.self_born_energy(
-                born_radii_full, sample.partial_charges,
+                born_radii_full, partial_charges,
                 cfg.gb_dielectric_in, cfg.gb_dielectric_out
             )
             gb_self_per_graph = scatter(gb_self_energy, sample.batch, dim=0)
@@ -311,7 +328,7 @@ class PIGNet(Module):
                     edge_index_lig = edge_index_lig[:, _mask_lig]
                     D_lig = D_lig[_mask_lig]
                     gb_pair_lig = physics.generalised_born_energy(
-                        D_lig, born_radii_iso, sample.partial_charges, edge_index_lig,
+                        D_lig, born_radii_iso, partial_charges, edge_index_lig,
                         cfg.gb_dielectric_in, cfg.gb_dielectric_out
                     )
                     gb_pair_lig_sum = scatter(gb_pair_lig, sample.batch[edge_index_lig[0]])
@@ -327,7 +344,7 @@ class PIGNet(Module):
                     edge_index_pro = edge_index_pro[:, _mask_pro]
                     D_pro = D_pro[_mask_pro]
                     gb_pair_pro = physics.generalised_born_energy(
-                        D_pro, born_radii_iso, sample.partial_charges, edge_index_pro,
+                        D_pro, born_radii_iso, partial_charges, edge_index_pro,
                         cfg.gb_dielectric_in, cfg.gb_dielectric_out
                     )
                     gb_pair_pro_sum = scatter(gb_pair_pro, sample.batch[edge_index_pro[0]])
@@ -336,7 +353,7 @@ class PIGNet(Module):
 
                 # Self-energy isolated sums
                 gb_self_iso = physics.self_born_energy(
-                    born_radii_iso, sample.partial_charges,
+                    born_radii_iso, partial_charges,
                     cfg.gb_dielectric_in, cfg.gb_dielectric_out
                 )
                 gb_self_lig_sum = scatter(gb_self_iso[ligand_mask], sample.batch[ligand_mask], dim=0)

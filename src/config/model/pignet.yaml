@@ -17,6 +17,9 @@ hydrophobic_cutoffs: [0.5, 1.5]
 include_ionic: false
 ionic_cutoffs: [-101.0, -100.0]
 
+# Learn per-atom partial charges with tanh head (range [-1, 1])
+learn_partial_charges: false
+
 # Generalized Born parameters
 include_gb: true
 gb_mode: delta_full  # complex | delta_full
