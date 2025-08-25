@@ -411,7 +411,7 @@ class ComplexDataset(Dataset):
 
         # Pre-compute labels if available
         if id_to_y is not None:
-            self.labels = id_to_y
+            self.labels = {k: v * -1.36 for k, v in id_to_y.items()}
             print(f"Loaded {len(self.labels)} labels:")
             for k, v in list(self.labels.items())[:10]:  # Print first 10 for debugging
                 print(f"  {k}: {v}")

@@ -101,7 +101,20 @@ def initialize_state(
     # Load the model.
     if checkpoint:
         model = instantiate(config.model, config, checkpoint["in_features"])
-        model.load_state_dict(checkpoint["model_state_dict"])
+            # Load tolerantly to allow older/newer checkpoints with minor head differences
+            incompatible = model.load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )
+            if getattr(incompatible, "missing_keys", None):
+                logging.warning(
+                    "Missing keys when loading state_dict: %s",
+                    ", ".join(incompatible.missing_keys),
+                )
+            if getattr(incompatible, "unexpected_keys", None):
+                logging.warning(
+                    "Unexpected keys in state_dict: %s",
+                    ", ".join(incompatible.unexpected_keys),
+                )
     # Initialize a fresh model.
     else:
         model = instantiate(config.model, config, in_features)
