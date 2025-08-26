@@ -15,7 +15,7 @@ do
     hydra.run.dir=${BENCHMARK_DIR} \
     run.ngpu=1 \
     run.batch_size=400 \
-    run.checkpoint_file=${EXE_DIR}/ckpt/pda_${SEED}.pt \
+    run.checkpoint_file=${EXE_DIR}/ckpt/pretrained_${SEED}.pt \
     run.log_file=${BENCHMARK_DIR}/benchmark/output_screening_${SEED}.log \
     data=messi/casf2016_screening \
     data.casf2016_screening.root_data_dir=${DATA_DIR} \

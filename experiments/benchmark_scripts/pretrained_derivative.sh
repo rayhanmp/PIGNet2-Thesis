@@ -12,7 +12,7 @@ do
     hydra.run.dir=${BENCHMARK_DIR} \
     run.ngpu=0 \
     run.batch_size=400 \
-    run.checkpoint_file=${EXE_DIR}/ckpt/pda_${SEED}.pt \
+    run.checkpoint_file=${EXE_DIR}/ckpt/pretrained_${SEED}.pt \
     run.log_file=${BENCHMARK_DIR}/benchmark/output_der_${SEED}.log \
     data=messi/derivative \
     data.derivative.root_data_dir=${DATA_DIR} \
