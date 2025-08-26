@@ -9,7 +9,7 @@ export CUDA_VISIBLE_DEVICES=$((0+${SEED}))
 
 # Using pre-trained model
 BENCHMARK_DIR=${ROOT_DIR}/experiments/pretrained
-for SEED in {0..3};
+for SEED in {0..2};
 do
   python -u ${EXE_DIR}/exe/test.py \
     hydra.run.dir=${BENCHMARK_DIR} \
