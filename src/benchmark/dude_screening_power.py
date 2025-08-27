@@ -4,7 +4,7 @@ import glob
 from collections import defaultdict
 from statistics import mean
 from typing import List
-from rdkit.ML.Scoring import Scoring
+from deepchem.metrics import bedroc_score
 
 import numpy as np
 from scipy import stats
@@ -65,8 +65,7 @@ def main(args: argparse.Namespace) -> None:
             y_true = np.array([1 if k in true_binders else 0 for k in selected_keys])
             y_score = np.array(preds)
 
-            # ---- NEW: compute BEDROC per target
-            bedroc_val = Scoring.BEDROC(y_true, y_score, alpha=80.5)
+            bedroc_val = bedroc_score(y_true, y_score, alpha=80.5)
             bedroc_vals.append(bedroc_val)
                 
             ntb_top_pdb, ntb_total_pdb = [], []
