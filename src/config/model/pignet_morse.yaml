@@ -18,7 +18,7 @@ include_ionic: false
 ionic_cutoffs: [-101.0, -100.0]
 
 # Learn per-atom partial charges with tanh head (range [-1, 1])
-learn_partial_charges: true
+learn_partial_charges: false
 
 # Generalized Born parameters
 include_gb: true
