@@ -4,6 +4,7 @@ import glob
 from collections import defaultdict
 from statistics import mean
 from typing import List
+from rdkit.ML.Scoring import Scoring
 
 import numpy as np
 from scipy import stats
@@ -59,6 +60,15 @@ def main(args: argparse.Namespace) -> None:
                 true_binders = [k for k in selected_keys if "_C" not in k]
             else:
                 true_binders = [k for k in selected_keys if "CHEMBL" in k]
+
+            # Build y_true and y_score
+            y_true = np.array([1 if k in true_binders else 0 for k in selected_keys])
+            y_score = np.array(preds)
+
+            # ---- NEW: compute BEDROC per target
+            bedroc_val = Scoring.BEDROC(y_true, y_score, alpha=80.5)
+            bedroc_vals.append(bedroc_val)
+                
             ntb_top_pdb, ntb_total_pdb = [], []
             for topn in [0.005, 0.01, 0.05, 0.1]:
                 n = int(topn * len(selected_keys))
@@ -82,6 +92,9 @@ def main(args: argparse.Namespace) -> None:
                 print(round(mean(ef), 3), end="\t")
             print(round(confidence_interval[0], 3), end="\t")
             print(round(confidence_interval[1], 3))
+
+            bedroc_ci = bootstrap_confidence(bedroc_vals, args.n_bootstrap)
+            print("BEDROC", round(mean(bedroc_vals), 3), round(bedroc_ci[0], 3), round(bedroc_ci[1], 3))
         else:
             for i in range(1):
                 ef = []
